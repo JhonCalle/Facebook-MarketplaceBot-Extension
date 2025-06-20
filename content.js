@@ -1,38 +1,42 @@
-// content.js – combinación final: ignorar 'Enter' y el nombre del chat en los mensajes
-
-// Debug function para consola y popup/background
+// content.js – clasificación buyer/seller usando "Enviaste" y filtrado tras "inició este chat"
+// -----------------------------------------------------------------------------
 function debugLog(message, data) {
   console.log(`[Marketplace Bot] ${message}`, data || '');
   chrome.runtime.sendMessage({ action: 'log', message, data });
 }
 
-// Inicialización
-document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', init) : init();
+document.readyState === 'loading'
+  ? document.addEventListener('DOMContentLoaded', init)
+  : init();
 
 function init() {
   debugLog('Content script loaded:', window.location.href);
 
-  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
     debugLog('Received action:', request.action);
-    if (request.action === 'ping') {
-      sendResponse({ status: 'active' });
-      return true;
-    }
-    if (request.action === 'scanTitle') {
-      const title = extractChatTitle();
-      debugLog('Extracted title:', title);
-      sendResponse({ title });
-      return true;
-    }
-    if (request.action === 'scanMessages') {
-      const messages = extractLastMessages(10);
-      debugLog('Extracted messages:', messages);
-      sendResponse({ messages });
-      return true;
+
+    switch (request.action) {
+      case 'ping':
+        sendResponse({ status: 'active' });
+        return true;
+      case 'scanTitle': {
+        const title = extractChatTitle();
+        debugLog('Extracted title:', title);
+        sendResponse({ title });
+        return true;
+      }
+      case 'scanMessages': {
+        const messages = extractLastMessages(10);
+        debugLog('Filtered messages:', messages);
+        sendResponse({ messages });
+        return true;
+      }
+      default:
+        return false;
     }
   });
 
-  // Observador de URL para Marketplace
+  // Observador de URL para detectar cambios en Marketplace
   let lastUrl = location.href;
   new MutationObserver(() => {
     if (location.href !== lastUrl) {
@@ -47,7 +51,9 @@ function init() {
   debugLog('Content script initialized');
 }
 
-// Extrae título de conversación activa (nombre del chat)
+// -----------------------------------------------------------------------------
+// Auxiliares
+// -----------------------------------------------------------------------------
 function extractChatTitle() {
   const header = document.querySelector('header[role="banner"]');
   if (header) {
@@ -59,42 +65,83 @@ function extractChatTitle() {
   return document.title;
 }
 
-// Extrae los últimos 'count' mensajes, ignorando 'Enter' y el nombre del chat
-function extractLastMessages(count) {
-  const container = document.querySelector('div[data-pagelet][role="main"]')
-                  || document.querySelector('[data-testid="messenger_list_view"]')
-                  || document.body;
+/**
+ * Devuelve los últimos `count` mensajes y etiqueta buyer/seller.
+ * Utiliza “Enviaste” para seller y descarta todo lo anterior a “inició este chat”.
+ */
+function extractLastMessages(count = 10) {
+  const container =
+    document.querySelector('div[data-pagelet][role="main"]') ||
+    document.querySelector('[data-testid="messenger_list_view"]') ||
+    document.body;
 
-  // Recopilar todos los mensajes en orden
+  // Recolectar grupos de mensaje
   let groups = container.querySelectorAll('div[data-testid="message-group"]');
   if (!groups.length) groups = container.querySelectorAll('div[role="row"]');
 
-  const raw = [];
+  // Recopilar todos los spans con texto en orden
+  let messages = [];
   groups.forEach(group => {
+    // Determinar remitente
+    const isSeller = /enviaste/i.test(group.textContent);
+    let sender = isSeller ? 'seller' :
+      group.querySelector('[data-testid="outgoing_message"]')
+        ? 'seller'
+        : 'buyer';
+
+    // Extraer textos
     group.querySelectorAll('span[dir="auto"]').forEach(span => {
       const text = span.textContent.trim();
-      if (text) raw.push(text);
+      if (text) messages.push({ text, sender });
     });
   });
 
-  if (!raw.length) {
-    // Fallback: todos los spans
+  // Fallback absoluto
+  if (!messages.length) {
     container.querySelectorAll('span[dir="auto"]').forEach(span => {
-      const t = span.textContent.trim();
-      if (t) raw.push(t);
+      const txt = span.textContent.trim();
+      if (txt) messages.push({ text: txt, sender: 'unknown' });
     });
   }
 
-    // Encontrar índice donde aparece el texto de inicio relevante (p.ej. "inició este chat")
-    const markerText = 'inició este chat';
-    // Busca la primera línea que contenga ese marcador
-    const markerIndex = raw.findIndex(t => t.toLowerCase().includes(markerText));
-    const base = markerIndex >= 0 ? raw.slice(markerIndex) : slicedRaw;
-  
-    // Filtrar valores indeseados (Enter y nombre del chat)
-    const filtered = base.filter(t => t !== 'Enter' && t !== extractChatTitle());
-  
-    // Devolver últimos 'count' mensajes filtrados
-    return filtered.slice(-count).map(text => ({ text }));(-count).map(text => ({ text }));
+  debugLog('Raw grouped texts:', messages);
+
+  // -------------------------------------------------------------------------
+  // Filtrado: eliminar mensajes antes de "inició este chat"
+  // -------------------------------------------------------------------------
+  const markerRegex = /inició este chat/i;
+  const markerIndex = messages.findIndex(m => markerRegex.test(m.text));
+  if (markerIndex >= 0) {
+    messages = messages.slice(markerIndex);
+    debugLog('Sliced after marker at index', markerIndex);
   }
-  
+
+  // -------------------------------------------------------------------------
+  // Filtros adicionales: timestamps, sistema, nombre de comprador, etc.
+  // -------------------------------------------------------------------------
+  const timeRegex = /^\d{1,2}:\d{2}(?:\s?[ap]m)?$/i;
+  const dateTimeRegex = /\d{1,2}\s(?:ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)\s\d{4},?\s\d{1,2}:\d{2}/i;
+  const relativeTimeRegex = /^enviado hace\s?\d+/i;
+  const waitingRegex = /está esperando tu respuesta/i;
+  const viewPostRegex = /ver publicación/i;
+  const buyerName = extractChatTitle().split(/[\s·-]/)[0].trim().toLowerCase();
+  const messagesend = /Message sent/i;
+
+  const filtered = messages.filter(m => {
+    const t = m.text;
+    if (!t) return false;
+    if (t === 'Enter') return false;
+    if (/^enviaste$/i.test(t)) return false;
+    if (t.toLowerCase() === buyerName) return false;
+    if (timeRegex.test(t)) return false;
+    if (dateTimeRegex.test(t)) return false;
+    if (relativeTimeRegex.test(t)) return false;
+    if (waitingRegex.test(t)) return false;
+    if (viewPostRegex.test(t)) return false;
+    if (messagesend.test(t)) return false;
+    return true;
+  });
+
+  // Devolver últimos `count`
+  return filtered.slice(-count);
+}
