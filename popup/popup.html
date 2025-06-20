@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Marketplace Auto-Responder</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <h1>Marketplace Auto-Responder</h1>
+    
+    <div class="status-container">
+      <div class="status-indicator">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText">Loading...</span>
+      </div>
+      
+      <button id="toggleButton" class="toggle-button">
+        <span class="toggle-slider"></span>
+      </button>
+    </div>
+    
+    <div class="info-section">
+      <p>When enabled, the bot will automatically respond to new Marketplace messages with: <em>"We will answer shortly"</em></p>
+      <p>Last checked: <span id="lastChecked">Never</span></p>
+      <p>Messages processed: <span id="messagesProcessed">0</span></p>
+    </div>
+    
+    <div class="debug-section">
+      <h3>Debug Tools</h3>
+      <button id="scanTitleButton" class="debug-button">Scan Chat Title</button>
+      <button id="scanMessagesButton" class="debug-button">Scan Last 5 Messages</button>
+      <button id="reloadScriptButton" class="debug-button">Recargar Script</button>
+    </div>
+
+    <div class="activity-log" id="activityLog">
+      <h3>Recent Activity</h3>
+      <div class="log-entries" id="logEntries">
+        <div class="log-entry">Welcome to Marketplace Auto-Responder</div>
+      </div>
+    </div>
+  </div>
+  
+  <script src="popup.js"></script>
+</body>
+</html>
