@@ -27,11 +27,17 @@
     </div>
     
     <div class="debug-section">
-      <h3>Debug Tools</h3>
-      <button id="scanTitleButton" class="debug-button">Scan Chat Title</button>
-      <button id="scanMessagesButton" class="debug-button">Scan Last 5 Messages</button>
-      <button id="reloadScriptButton" class="debug-button">Recargar Script</button>
-    </div>
+  <h3>Debug Tools</h3>
+  <div style="margin-bottom:10px;">
+    <label for="scanLimitInput" style="font-size:13px;">Límite de mensajes a escanear:</label>
+    <input type="number" id="scanLimitInput" min="1" max="100" style="width:60px; margin-left:8px;" />
+    <button id="saveScanLimitBtn" style="margin-left:8px;">Guardar</button>
+  </div>
+  <button id="scanTitleButton" class="debug-button">Scan Chat Title</button>
+  <button id="scanMessagesButton" class="debug-button">Scan Last 5 Messages</button>
+  <button id="reloadScriptButton" class="debug-button">Recargar Script</button>
+  <button id="scanTopChatsButton" class="debug-button">Scan Top 10 Chats</button>
+</div>
 
     <div class="activity-log" id="activityLog">
       <h3>Recent Activity</h3>

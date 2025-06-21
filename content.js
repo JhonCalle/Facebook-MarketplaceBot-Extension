@@ -1,5 +1,6 @@
 // content.js – clasificación buyer/seller usando "Enviaste" y filtrado tras "inició este chat"
 // -----------------------------------------------------------------------------
+
 function debugLog(message, data) {
   console.log(`[Marketplace Bot] ${message}`, data || '');
   chrome.runtime.sendMessage({ action: 'log', message, data });
@@ -19,18 +20,31 @@ function init() {
       case 'ping':
         sendResponse({ status: 'active' });
         return true;
+
       case 'scanTitle': {
         const title = extractChatTitle();
         debugLog('Extracted title:', title);
         sendResponse({ title });
         return true;
       }
+
       case 'scanMessages': {
-        const messages = extractLastMessages(10);
-        debugLog('Filtered messages:', messages);
-        sendResponse({ messages });
+        chrome.storage.local.get(['scanLimit'], async (result) => {
+          const limit = parseInt(result.scanLimit, 10) || 10;
+          const messages = await extractLastMessages(limit);
+          debugLog('Extracted messages:', messages);
+          sendResponse({ messages });
+        });
         return true;
       }
+
+      case 'scanTopChats': {
+        const topChats = scanTopChats();
+        debugLog('Top 10 chats scanned:', topChats);
+        sendResponse({ chats: topChats });
+        return true;
+      }
+
       default:
         return false;
     }
@@ -52,6 +66,45 @@ function init() {
 }
 
 // -----------------------------------------------------------------------------
+// Lógica para escanear top 10 chats disponibles solo dentro de Marketplace
+// -----------------------------------------------------------------------------
+function scanTopChats() {
+  // Intentar ubicar el panel de chats de Marketplace en la barra lateral
+  let container = document;
+  const spans = Array.from(document.querySelectorAll('span[dir="auto"]'));
+  const marketSpan = spans.find(span => span.textContent.trim() === 'Marketplace');
+  if (marketSpan) {
+    const panel = marketSpan.closest('div[role="navigation"]');
+    if (panel) {
+      container = panel;
+    }
+  }
+
+  // Selecciona los enlaces de chat dentro del contenedor de Marketplace
+  const chatLinks = container.querySelectorAll('a[role="link"][href*="/t/"]');
+  const chats = Array.from(chatLinks)
+    .slice(0, 10)
+    .map(link => {
+      // Título del chat (nombre del comprador o descripción)
+      const title = link.getAttribute('aria-label')?.trim() || link.textContent.trim();
+      // Extraer ID del chat de la URL
+      const match = link.href.match(/\/t\/([^\/?#]+)/);
+      const id = match ? match[1] : null;
+      return { title, id };
+    });
+  return chats;
+}
+
+// Función de prueba invocada desde el popup
+function scanTopChatsFromPopup() {
+  const chats = scanTopChats();
+  chats.forEach(chat => {
+    debugLog(`Chat encontrado: ${chat.title}`, chat.id);
+  });
+  return chats;
+}
+
+// -----------------------------------------------------------------------------
 // Auxiliares
 // -----------------------------------------------------------------------------
 function extractChatTitle() {
@@ -65,38 +118,30 @@ function extractChatTitle() {
   return document.title;
 }
 
-/**
- * Devuelve los últimos `count` mensajes y etiqueta buyer/seller.
- * Utiliza “Enviaste” para seller y descarta todo lo anterior a “inició este chat”.
- */
-function extractLastMessages(count = 10) {
+async function extractLastMessages(count) {
   const container =
     document.querySelector('div[data-pagelet][role="main"]') ||
     document.querySelector('[data-testid="messenger_list_view"]') ||
     document.body;
 
-  // Recolectar grupos de mensaje
   let groups = container.querySelectorAll('div[data-testid="message-group"]');
   if (!groups.length) groups = container.querySelectorAll('div[role="row"]');
 
-  // Recopilar todos los spans con texto en orden
   let messages = [];
   groups.forEach(group => {
-    // Determinar remitente
     const isSeller = /enviaste/i.test(group.textContent);
-    let sender = isSeller ? 'seller' :
-      group.querySelector('[data-testid="outgoing_message"]')
+    const sender = isSeller
+      ? 'seller'
+      : group.querySelector('[data-testid="outgoing_message"]')
         ? 'seller'
         : 'buyer';
 
-    // Extraer textos
     group.querySelectorAll('span[dir="auto"]').forEach(span => {
       const text = span.textContent.trim();
       if (text) messages.push({ text, sender });
     });
   });
 
-  // Fallback absoluto
   if (!messages.length) {
     container.querySelectorAll('span[dir="auto"]').forEach(span => {
       const txt = span.textContent.trim();
@@ -104,11 +149,7 @@ function extractLastMessages(count = 10) {
     });
   }
 
-  debugLog('Raw grouped texts:', messages);
-
-  // -------------------------------------------------------------------------
-  // Filtrado: eliminar mensajes antes de "inició este chat"
-  // -------------------------------------------------------------------------
+  // Filtrado tras "inició este chat"
   const markerRegex = /inició este chat/i;
   const markerIndex = messages.findIndex(m => markerRegex.test(m.text));
   if (markerIndex >= 0) {
@@ -116,9 +157,6 @@ function extractLastMessages(count = 10) {
     debugLog('Sliced after marker at index', markerIndex);
   }
 
-  // -------------------------------------------------------------------------
-  // Filtros adicionales: timestamps, sistema, nombre de comprador, etc.
-  // -------------------------------------------------------------------------
   const timeRegex = /^\d{1,2}:\d{2}(?:\s?[ap]m)?$/i;
   const dateTimeRegex = /\d{1,2}\s(?:ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)\s\d{4},?\s\d{1,2}:\d{2}/i;
   const relativeTimeRegex = /^enviado hace\s?\d+/i;
@@ -142,6 +180,5 @@ function extractLastMessages(count = 10) {
     return true;
   });
 
-  // Devolver últimos `count`
   return filtered.slice(-count);
 }
