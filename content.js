@@ -1,309 +1,403 @@
-// ============================================================================
-// UPDATED FILE: content.js – navegación y extracción de chats detallada
-// ----------------------------------------------------------------------------
-
-// Este script ahora incluye la acción "scanChatsDetailed" que recorre los últimos
-// 10 chats de Marketplace, entra en cada uno, extrae el título y los últimos
-// mensajes (etiquetados buyer/seller) y devuelve un arreglo JSON al popup.
+// =============================================================================
+// content.js – Marketplace Bot content‑script (refactored for robustness)
+// =============================================================================
+// Responsibilities
+// 1. Scan Marketplace chat list, open each chat, collect the last N messages
+// 2. Provide data back to the popup via chrome.runtime messaging
+// 3. (Future) Send collected data to an external API and post the reply
 // -----------------------------------------------------------------------------
+// Design notes
+// • All chrome messaging strings are declared as constants
+// • Heavy DOM selectors are centralised in SELECTORS to ease maintenance
+// • Timeouts / limits are configurable via CONFIG and overridable from storage
+// • Public interface is exposed through the global MarketplaceBot object to
+//   simplify testing from the console (`window.MarketplaceBot.*`)
+// • Every async flow is wrapped in try/catch and logs meaningful errors 
+// • Next‑phase hooks: ApiClient.sendChat() and Messenger.sendMessage()
+// =============================================================================
 
-let isCycling = false; // evita ciclos simultáneos
+(() => {
+  'use strict';
 
-function debugLog(message, data) {
-  console.log(`[Marketplace Bot] ${message}`, data || '');
-  chrome.runtime.sendMessage({ action: 'log', message, data });
-}
+  // ────────────────────────────────────────────────────────────────────────────
+  // Constants & Config
+  // ────────────────────────────────────────────────────────────────────────────
+  const MSG = {
+    PING:              'ping',
+    SCAN_TITLE:        'scanTitle',
+    SCAN_MESSAGES:     'scanMessages',
+    SCAN_TOP:          'scanTopChats',
+    CYCLE_CHATS:       'cycleChats',
+    SCAN_DETAILED:     'scanChatsDetailed',
+    SEND_TEST_REPLY:   'sendTestReply',
+    CHECK_NEW:         'checkForNewMessages',
+    LOG:               'log'
+  };
 
-document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', init) : init();
+  const CONFIG = {
+    DEFAULT_CHAT_LIMIT   : 10,
+    DEFAULT_MSG_LIMIT    : 10,
+    DEFAULT_DELAY_MS     : 1500,
+    WAIT_FOR_ELEMENT_MS  : 5000,
+    WAIT_FOR_INTERVAL_MS : 100
+  };
 
-function init() {
-  debugLog('Content script loaded:', window.location.href);
+  const SELECTORS = {
+    composer        : '[contenteditable="true"][role="textbox"]',
+    messageGroup    : 'div[data-testid="message-group"], div[role="row"]',
+    header          : 'header[role="banner"]',
+    headerLink      : 'header[role="banner"] a[role="link"][href*="/t/"][aria-label]',
+    headerTitleSpan : 'h2 span[dir="auto"]',
+    topChatLinks    : 'a[role="link"][href*="/t/"]'
+  };
 
-  chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
-    debugLog('Received action:', request.action);
+  // Regex pre‑compilation ------------------------------------------------------
+  const REGEX = {
+    markerChatStart  : /inició este chat/i,
+    timeOnly         : /^\d{1,2}:\d{2}(?:\s?[ap]m)?$/i,
+    dateTimeText     : /\d{1,2}\s(?:ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)\s\d{4},?\s\d{1,2}:\d{2}/i,
+    numericDateTime  : /^\d{1,2}\/\d{1,2}\/\d{2,4},?\s?\d{1,2}:\d{2}(?:\s?[ap]m)?$/i,
+    relativeTime     : /^enviado hace\s?\d+/i,
+    awaitingResponse : /está esperando tu respuesta/i,
+    viewPost         : /ver publicación/i,
+    sentLabel        : /message sent/i,
+    justSent         : /^enviado$/i,
+    youSent          : /enviaste/i
+  };
 
-    switch (request.action) {
-      // ---------------- EXISTENTES ----------------
-      case 'ping':           sendResponse({ status: 'active' }); return true;
-      case 'scanTitle':      sendResponse({ title: extractChatTitle() }); return true;
-      case 'scanMessages':   handleScanMessages(request, sendResponse);           return true;
-      case 'scanTopChats':   sendResponse({ chats: scanTopChats() });             return true;
-      case 'cycleChats':     startChatCycling(); sendResponse({ started: true }); return true;
-      case 'scanChatsDetailed': handleScanChatsDetailed(sendResponse);            return true;
+  // Internal state ------------------------------------------------------------
+  let isCycling = false;
 
-      // ---------------- NUEVA ACCIÓN ----------------
-      case 'sendTestReply': {
-        const ok = sendTestReply();
-        sendResponse({ sent: ok });
-        return true;
-      }
-      default:
+  // ────────────────────────────────────────────────────────────────────────────
+  // Utilities
+  // ────────────────────────────────────────────────────────────────────────────
+  function log(message, data) {
+    console.log(`[Marketplace Bot] ${message}`, data || '');
+    chrome.runtime.sendMessage({ action: MSG.LOG, message, data });
+  }
+
+  function waitFor(conditionFn, interval = CONFIG.WAIT_FOR_INTERVAL_MS, timeout = CONFIG.WAIT_FOR_ELEMENT_MS) {
+    return new Promise(resolve => {
+      const start = Date.now();
+      const id = setInterval(() => {
+        if (conditionFn()) {
+          clearInterval(id);
+          resolve(true);
+        } else if (Date.now() - start > timeout) {
+          clearInterval(id);
+          resolve(false);
+        }
+      }, interval);
+    });
+  }
+
+  function delay(ms) {
+    return new Promise(r => setTimeout(r, ms));
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // Messenger helpers (DOM operations only)
+  // ────────────────────────────────────────────────────────────────────────────
+  const Messenger = {
+    focusComposer() {
+      const composer = document.querySelector(SELECTORS.composer);
+      if (!composer) return null;
+      composer.focus();
+      return composer;
+    },
+
+    clearComposer(composer) {
+      document.execCommand('selectAll', false, null);
+      document.execCommand('delete',   false, null);
+    },
+
+    insertText(composer, text) {
+      document.execCommand('insertText', false, text);
+      composer.dispatchEvent(new InputEvent('input', { bubbles: true }));
+    },
+
+    async sendMessage(text) {
+      const composer = this.focusComposer();
+      if (!composer) {
+        log('Composer not found – cannot send message');
         return false;
-    }
-  });
+      }
 
-  // Observador de cambios de URL (se conserva)
-  let lastUrl = location.href;
-  new MutationObserver(() => {
-    if (location.href !== lastUrl) {
-      lastUrl = location.href;
-      if (/messenger\.com\/marketplace/.test(location.href)) {
-        debugLog('Marketplace view detected');
-        chrome.runtime.sendMessage({ action: 'checkForNewMessages' });
+      this.clearComposer(composer);
+      this.insertText(composer, text);
+      await delay(500);
+
+      const enterDown = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
+      const enterUp   = new KeyboardEvent('keyup',   { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
+      composer.dispatchEvent(enterDown);
+      composer.dispatchEvent(enterUp);
+      log('Mensaje enviado');
+      return true;
+    },
+
+    extractChatTitle() {
+      const headerLink = document.querySelector(SELECTORS.headerLink);
+      if (headerLink) return headerLink.getAttribute('aria-label').trim();
+      const span = document.querySelector(SELECTORS.headerTitleSpan);
+      if (span) return span.textContent.trim();
+      return document.title;
+    },
+
+    async extractLastMessages(limit) {
+      const container =
+        document.querySelector('div[data-pagelet][role="main"]') ||
+        document.querySelector('[data-testid="messenger_list_view"]') ||
+        document.body;
+
+      let groups = container.querySelectorAll(SELECTORS.messageGroup);
+      if (!groups.length) groups = container.querySelectorAll('div[role="row"]');
+
+      const messages = [];
+      groups.forEach(group => {
+        const textContent = group.textContent;
+        const isSeller = REGEX.youSent.test(textContent) || group.querySelector('[data-testid="outgoing_message"]');
+        const sender = isSeller ? 'seller' : 'buyer';
+
+        group.querySelectorAll('span[dir="auto"]').forEach(span => {
+          const text = span.textContent.trim();
+          if (text) messages.push({ text, sender });
+        });
+      });
+
+      if (!messages.length) {
+        container.querySelectorAll('span[dir="auto"]').forEach(span => {
+          const text = span.textContent.trim();
+          if (text) messages.push({ text, sender: 'unknown' });
+        });
+      }
+
+      // Slice after the "inició este chat" marker
+      const markerIdx = messages.findIndex(m => REGEX.markerChatStart.test(m.text));
+      if (markerIdx >= 0) messages.splice(0, markerIdx + 1);
+
+      // Buyer name (first word of chat title) for filtering
+      const buyerName = Messenger.extractChatTitle().split(/[\s·-]/)[0]?.toLowerCase() || '';
+
+      const filtered = messages.filter(m => {
+        const t = m.text.toLowerCase();
+        if (!t) return false;
+        if (t === 'enter') return false;
+        if (REGEX.justSent.test(t)) return false;
+        if (t === buyerName) return false;
+        if (REGEX.timeOnly.test(t)) return false;
+        if (REGEX.dateTimeText.test(t) || REGEX.numericDateTime.test(t)) return false;
+        if (REGEX.relativeTime.test(t)) return false;
+        if (REGEX.awaitingResponse.test(t)) return false;
+        if (REGEX.viewPost.test(t)) return false;
+        if (REGEX.sentLabel.test(t)) return false;
+        return true;
+      });
+
+      return filtered.slice(-limit);
+    }
+  };
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // ApiClient – Placeholder for phase 2
+  // ────────────────────────────────────────────────────────────────────────────
+  const ApiClient = {
+    /**
+     * Send chatData to external server and return the response.
+     * @param {object} chatData – { clientName, chatName, messages }
+     * @returns {Promise<{ reply: string } | null>}
+     */
+    async sendChat(chatData) {
+      // NOTE: Implementation will vary. This is only a stub.
+      try {
+        // Example: const resp = await fetch('https://example.com/api/reply', {
+        //   method: 'POST',
+        //   headers: { 'Content-Type': 'application/json' },
+        //   body: JSON.stringify(chatData)
+        // });
+        // return await resp.json();
+        return null; // placeholder
+      } catch (err) {
+        log('ApiClient error', err);
+        return null;
       }
     }
-  }).observe(document, { childList: true, subtree: true });
+  };
 
-  debugLog('Content script initialized');
-}
-
-// -----------------------------------------------------------------------------
-// Acción: enviar respuesta de prueba
-// -----------------------------------------------------------------------------
-async function sendTestReply(text = 'respuesta de prueba') {
-  try {
-    const composer = document.querySelector('[contenteditable="true"][role="textbox"]');
-    if (!composer) {
-      debugLog('Composer not found – aborting sendTestReply');
-      return false;
-    }
-
-    // Foco y limpieza
-    composer.focus();
-    document.execCommand('selectAll', false, null);
-    document.execCommand('delete',     false, null);
-
-    // Insertar texto
-    document.execCommand('insertText', false, text);
-    composer.dispatchEvent(new InputEvent('input', { bubbles: true }));
-
-    await new Promise(r => setTimeout(r, 1000));
-
-    // Simular tecla Enter para enviar
-    const enterDown = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
-    const enterUp   = new KeyboardEvent('keyup',   { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
-    composer.dispatchEvent(enterDown);
-    composer.dispatchEvent(enterUp);
-
-    debugLog('Mensaje enviado con éxito');
-    return true;
-  } catch (err) {
-    debugLog('Error en sendTestReply', err);
-    return false;
-  }
-}
-
-// -----------------------------------------------------------------------------
-// NUEVA FUNCIÓN PRINCIPAL – recorrido secuencial y extracción de datos
-// -----------------------------------------------------------------------------
-async function collectChatsData(chatLimit = 10, messagesLimit = 10, delay = 1500) {
-  if (isCycling) {
-    debugLog('Otro ciclo está en ejecución; abortando collectChatsData');
-    return [];
-  }
-  isCycling = true;
-
-  const chats   = scanTopChats().slice(0, chatLimit);
-  const results = [];
-
-  debugLog(`Comenzando extracción detallada de ${chats.length} chats`);
-
-  for (let i = 0; i < chats.length; i++) {
-    const { id, title } = chats[i];
-    if (!id) continue;
-
-    debugLog(`(${i + 1}/${chats.length}) Abriendo chat ID: ${id}`);
-
-    // Navegación SPA; fallback a cambio de href completo
-    const link = document.querySelector(`a[role="link"][href*="/t/${id}"]`);
-    if (link) {
-      link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-    } else {
-      window.location.href = `https://www.messenger.com/t/${id}`;
-    }
-
-    // Esperar a que cargue el chat (header con título y al menos 1 mensaje)
-    await waitFor(() => document.querySelector('header[role="banner"]'));
-    await waitFor(() => document.querySelector('div[data-testid="message-group"], div[role="row"]'));
-
-    // Pequeña pausa extra para asegurar renderizado
-    await new Promise(r => setTimeout(r, 400));
-
-    const chatTitle = extractChatTitle();
-    const messages  = await extractLastMessages(messagesLimit);
-
-    results.push({
-      clientName : chatTitle.split(/\s/)[0] || chatTitle,
-      chatName   : chatTitle,
-      messages   : messages
-    });
-
-    // Esperar antes de abrir el siguiente chat
-    await new Promise(r => setTimeout(r, delay));
-  }
-
-  debugLog('Extracción completa', results);
-  isCycling = false;
-  return results;
-}
-
-// -----------------------------------------------------------------------------
-// Utilidad: espera hasta que la condición sea verdadera o venza el timeout
-// -----------------------------------------------------------------------------
-function waitFor(conditionFn, interval = 100, timeout = 5000) {
-  return new Promise((resolve) => {
-    const start    = Date.now();
-    const timerId  = setInterval(() => {
-      if (conditionFn()) {
-        clearInterval(timerId);
-        resolve();
-      } else if (Date.now() - start > timeout) {
-        clearInterval(timerId);
-        resolve();
+  // ────────────────────────────────────────────────────────────────────────────
+  // ChatScanner – high‑level orchestration of chat traversal
+  // ────────────────────────────────────────────────────────────────────────────
+  const ChatScanner = {
+    async scanTopChats(limit = CONFIG.DEFAULT_CHAT_LIMIT) {
+      // Narrow search to Marketplace nav section if present
+      let container = document;
+      const spanMarketplace = Array.from(document.querySelectorAll('span[dir="auto"]'))
+        .find(el => el.textContent.trim() === 'Marketplace');
+      if (spanMarketplace) {
+        const nav = spanMarketplace.closest('div[role="navigation"]');
+        if (nav) container = nav;
       }
-    }, interval);
-  });
-}
 
-// -----------------------------------------------------------------------------
-// Lógica para escanear top 10 chats disponibles solo dentro de Marketplace
-// -----------------------------------------------------------------------------
-function scanTopChats() {
-  // Intentar ubicar el panel de chats de Marketplace en la barra lateral
-  let container = document;
-  const spans = Array.from(document.querySelectorAll('span[dir="auto"]'));
-  const marketSpan = spans.find(span => span.textContent.trim() === 'Marketplace');
-  if (marketSpan) {
-    const panel = marketSpan.closest('div[role="navigation"]');
-    if (panel) {
-      container = panel;
+      const chats = Array.from(container.querySelectorAll(SELECTORS.topChatLinks))
+        .slice(0, limit)
+        .map(link => {
+          const title = link.getAttribute('aria-label')?.trim() || link.textContent.trim();
+          const id = (link.href.match(/\/t\/([^\/?#]+)/) || [])[1];
+          return { id, title };
+        })
+        .filter(c => c.id);
+
+      return chats;
+    },
+
+    async openChatById(id) {
+      const link = document.querySelector(`a[role="link"][href*="/t/${id}"]`);
+      if (link) {
+        link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      } else {
+        window.location.href = `https://www.messenger.com/t/${id}`;
+      }
+      // Wait for header + at least one msg group
+      await waitFor(() => document.querySelector(SELECTORS.header));
+      await waitFor(() => document.querySelector(SELECTORS.messageGroup));
+      await delay(400); // render buffer
+    },
+
+    async collectChatsData(chatLimit, msgLimit, delayMs) {
+      if (isCycling) {
+        log('collectChatsData already running – abort');
+        return [];
+      }
+      isCycling = true;
+
+      const chats = await this.scanTopChats(chatLimit);
+      const results = [];
+
+      log(`Starting detailed scan of ${chats.length} chats`);
+      for (let i = 0; i < chats.length; i++) {
+        const { id, title } = chats[i];
+        log(`(${i + 1}/${chats.length}) Opening chat ${id}`);
+        await this.openChatById(id);
+
+        const chatTitle = Messenger.extractChatTitle();
+        const messages  = await Messenger.extractLastMessages(msgLimit);
+
+        // Split at '·' → antes = clientName, después = listing
+        const parts     = chatTitle.split('·').map(s => s.trim());
+        const clientName = parts[0] || chatTitle;
+        const listing    = parts[1] || chatTitle;
+
+        const chatData = {
+          clientName,
+          listing,
+          chatName : chatTitle,
+          messages
+        };
+        results.push(chatData);
+
+        // Future: Call external API and send reply ---------------------------
+        // const apiResp = await ApiClient.sendChat(chatData);
+        // if (apiResp?.reply) await Messenger.sendMessage(apiResp.reply);
+
+        await delay(delayMs);
+      }
+
+      isCycling = false;
+      log('Detailed scan completed', results);
+      return results;
     }
+  };
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // Message Handlers
+  // ────────────────────────────────────────────────────────────────────────────
+  async function handleMessage(request, sender, sendResponse) {
+    try {
+      switch (request.action) {
+        case MSG.PING:
+          sendResponse({ status: 'active' });
+          break;
+
+        case MSG.SCAN_TITLE:
+          sendResponse({ title: Messenger.extractChatTitle() });
+          break;
+
+        case MSG.SCAN_MESSAGES: {
+          const limit = await getStoredNumber('scanLimit', CONFIG.DEFAULT_MSG_LIMIT);
+          const messages = await Messenger.extractLastMessages(limit);
+          sendResponse({ messages });
+          break;
+        }
+
+        case MSG.SCAN_TOP:
+          sendResponse({ chats: await ChatScanner.scanTopChats() });
+          break;
+
+        case MSG.CYCLE_CHATS:
+          ChatScanner.collectChatsData(CONFIG.DEFAULT_CHAT_LIMIT, CONFIG.DEFAULT_MSG_LIMIT, CONFIG.DEFAULT_DELAY_MS);
+          sendResponse({ started: true });
+          break;
+
+        case MSG.SCAN_DETAILED: {
+          const msgLimit = await getStoredNumber('scanLimit', CONFIG.DEFAULT_MSG_LIMIT);
+          const data = await ChatScanner.collectChatsData(CONFIG.DEFAULT_CHAT_LIMIT, msgLimit, CONFIG.DEFAULT_DELAY_MS);
+          sendResponse({ chatsData: data });
+          break;
+        }
+
+        case MSG.SEND_TEST_REPLY:
+          sendResponse({ sent: await Messenger.sendMessage('respuesta de prueba') });
+          break;
+
+        default:
+          sendResponse({});
+      }
+    } catch (err) {
+      log('Error in message handler', err);
+      sendResponse({ error: err.message });
+    }
+
+    return true; // keep message channel open for async sendResponse
   }
 
-  // Selecciona los enlaces de chat dentro del contenedor de Marketplace
-  const chatLinks = container.querySelectorAll('a[role="link"][href*="/t/"]');
-  const chats = Array.from(chatLinks)
-    .slice(0, 10)
-    .map(link => {
-      // Título del chat (nombre del comprador o descripción)
-      const title = link.getAttribute('aria-label')?.trim() || link.textContent.trim();
-      // Extraer ID del chat de la URL
-      const match = link.href.match(/\/t\/([^\/?#]+)/);
-      const id = match ? match[1] : null;
-      return { title, id };
-    });
-  return chats;
-}
-
-// Función de prueba invocada desde el popup
-function scanTopChatsFromPopup() {
-  const chats = scanTopChats();
-  chats.forEach(chat => {
-    debugLog(`Chat encontrado: ${chat.title}`, chat.id);
-  });
-  return chats;
-}
-
-// -----------------------------------------------------------------------------
-// Auxiliares
-// -----------------------------------------------------------------------------
-function extractChatTitle() {
-  const header = document.querySelector('header[role="banner"]');
-  if (header) {
-    const link = header.querySelector('a[role="link"][href*="/t/"][aria-label]');
-    if (link) return link.getAttribute('aria-label').trim();
-  }
-  const span = document.querySelector('h2 span[dir="auto"]');
-  if (span) return span.textContent.trim();
-  return document.title;
-}
-
-function handleScanMessages(_request, sendResponse) {
-  chrome.storage.local.get(['scanLimit'], async result => {
-    const limit    = parseInt(result.scanLimit, 10) || 10;
-    const messages = await extractLastMessages(limit);
-    sendResponse({ messages });
-  });
-}
-
-function handleScanChatsDetailed(sendResponse) {
-  chrome.storage.local.get(['scanLimit'], async result => {
-    const msgLimit = parseInt(result.scanLimit, 10) || 10;
-    const data     = await collectChatsData(10, msgLimit, 1800);
-    sendResponse({ chatsData: data });
-  });
-}
-
-async function extractLastMessages(count) {
-  const container =
-    document.querySelector('div[data-pagelet][role="main"]') ||
-    document.querySelector('[data-testid="messenger_list_view"]') ||
-    document.body;
-
-  let groups = container.querySelectorAll('div[data-testid="message-group"]');
-  if (!groups.length) groups = container.querySelectorAll('div[role="row"]');
-
-  let messages = [];
-  groups.forEach(group => {
-    const isSeller = /enviaste/i.test(group.textContent);
-    const sender = isSeller
-      ? 'seller'
-      : group.querySelector('[data-testid="outgoing_message"]')
-        ? 'seller'
-        : 'buyer';
-
-    group.querySelectorAll('span[dir="auto"]').forEach(span => {
-      const text = span.textContent.trim();
-      if (text) messages.push({ text, sender });
-    });
-  });
-
-  if (!messages.length) {
-    container.querySelectorAll('span[dir="auto"]').forEach(span => {
-      const txt = span.textContent.trim();
-      if (txt) messages.push({ text: txt, sender: 'unknown' });
+  // ────────────────────────────────────────────────────────────────────────────
+  // Helpers
+  // ────────────────────────────────────────────────────────────────────────────
+  async function getStoredNumber(key, fallback) {
+    return new Promise(resolve => {
+      chrome.storage.local.get([key], result => {
+        resolve(parseInt(result[key], 10) || fallback);
+      });
     });
   }
 
-  // Filtrado tras "inició este chat"
-  const markerRegex = /inició este chat/i;
-  const markerIndex = messages.findIndex(m => markerRegex.test(m.text));
-  if (markerIndex >= 0) {
-    messages = messages.slice(markerIndex);
-    debugLog('Sliced after marker at index', markerIndex);
+  function onUrlChange() {
+    let lastUrl = location.href;
+    new MutationObserver(() => {
+      if (location.href !== lastUrl) {
+        lastUrl = location.href;
+        if (/messenger\.com\/marketplace/.test(location.href)) {
+          log('Marketplace view detected');
+          chrome.runtime.sendMessage({ action: MSG.CHECK_NEW });
+        }
+      }
+    }).observe(document, { childList: true, subtree: true });
   }
 
-  // Definición de expresiones regulares para filtrar metadatos
-  const timeRegex = /^\d{1,2}:\d{2}(?:\s?[ap]m)?$/i;
-  const dateTimeRegex = /\d{1,2}\s(?:ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)\s\d{4},?\s\d{1,2}:\d{2}/i;
-  const numericDateRegex = /^\d{1,2}\/\d{1,2}\/\d{2,4},?\s?\d{1,2}:\d{2}(?:\s?[ap]m)?$/i;
-  const relativeTimeRegex = /^enviado hace\s?\d+/i;
-  const awaitingResponseRegex = /está esperando tu respuesta/i;
-  const viewPostRegex = /ver publicación/i;
-  const sentRegex = /message sent/i;
-  const soloEnviadoRegex = /^enviado$/i;
+  // ────────────────────────────────────────────────────────────────────────────
+  // Boot
+  // ────────────────────────────────────────────────────────────────────────────
+  function init() {
+    log('Content script initialised', window.location.href);
+    chrome.runtime.onMessage.addListener(handleMessage);
+    onUrlChange();
+  }
 
-  // Obtener nombre del comprador para excluirlo
-  const buyerName = extractChatTitle().split(/[\s·-]/)[0]?.trim().toLowerCase();
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
 
-  // Filtrado de mensajes
-  const filtered = messages.filter(m => {
-    const t = m.text?.trim();
-    if (!t) return false;
-    if (t === 'Enter') return false;
-    if (/^enviaste$/i.test(t)) return false;
-    if (soloEnviadoRegex.test(t)) return false;
-    if (t.toLowerCase() === buyerName) return false;
-    if (timeRegex.test(t)) return false;
-    if (dateTimeRegex.test(t) || numericDateRegex.test(t)) return false;
-    if (relativeTimeRegex.test(t)) return false;
-    if (awaitingResponseRegex.test(t)) return false;
-    if (viewPostRegex.test(t)) return false;
-    if (sentRegex.test(t)) return false;
-    return true;
-  });
-
-  // Devolver solo los últimos 'count' mensajes relevantes
-  return filtered.slice(-count);
-}
-
+  // Expose helpers for debugging from DevTools --------------------------------
+  window.MarketplaceBot = { Messenger, ChatScanner, ApiClient, utils: { waitFor, delay, log } };
+})();
