@@ -41,6 +41,44 @@ document.addEventListener('DOMContentLoaded', () => {
       lastChecked.textContent = new Date(result.lastCheckedTime).toLocaleString();
     }
     messagesProcessed.textContent = messageCount;
+
+    // ────────────────────────────────────────────────────────────────────
+    // Nueva UI minimalista: selector de cantidad + botón EMPEZAR
+    // Ocultar secciones antiguas que ya no se usan
+    document.querySelectorAll('.debug-section, .status-container, .info-section').forEach(el => {
+      if (el) el.style.display = 'none';
+    });
+
+    const container = document.querySelector('.container');
+    if (container && !document.getElementById('chatCountInput')) {
+      const controlDiv = document.createElement('div');
+      controlDiv.style.padding = '15px';
+      controlDiv.innerHTML = `
+        <label for="chatCountInput" style="font-size:13px;">Cantidad de chats a escanear:</label>
+        <input type="number" id="chatCountInput" min="1" max="100" value="${scanLimit}" style="width:60px; margin-left:8px;" />
+        <button id="startScanBtn" style="margin-left:8px; padding:6px 12px; background:#1877f2; color:#fff; border:none; border-radius:4px; cursor:pointer;">EMPEZAR</button>
+      `;
+      container.insertBefore(controlDiv, container.children[1]);
+
+      const chatCountInput = document.getElementById('chatCountInput');
+      const startScanBtn   = document.getElementById('startScanBtn');
+
+      startScanBtn.addEventListener('click', async () => {
+        let chatLimit = parseInt(chatCountInput.value, 10);
+        if (isNaN(chatLimit) || chatLimit < 1) chatLimit = 1;
+        if (chatLimit > 100) chatLimit = 100;
+        chrome.storage.local.set({ chatLimit });
+
+        const ready = await ensureContentScript();
+        if (!ready) { debugLog('Content script no disponible.'); return; }
+
+        chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
+          chrome.tabs.sendMessage(tabs[0].id, { action: 'startBot', chatLimit }, resp => {
+            debugLog('Bot iniciado', resp);
+          });
+        });
+      });
+    }
   });
 
   // Guardar nuevo scanLimit

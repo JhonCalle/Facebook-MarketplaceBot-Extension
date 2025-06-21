@@ -30,12 +30,14 @@
     CYCLE_CHATS:       'cycleChats',
     SCAN_DETAILED:     'scanChatsDetailed',
     SEND_TEST_REPLY:   'sendTestReply',
+    START_BOT:         'startBot',
+    STOP_BOT:          'stopBot',
     CHECK_NEW:         'checkForNewMessages',
     LOG:               'log'
   };
 
   const CONFIG = {
-    DEFAULT_CHAT_LIMIT   : 10,
+    DEFAULT_CHAT_LIMIT   : 5,
     DEFAULT_MSG_LIMIT    : 10,
     DEFAULT_DELAY_MS     : 1500,
     WAIT_FOR_ELEMENT_MS  : 5000,
@@ -67,6 +69,60 @@
 
   // Internal state ------------------------------------------------------------
   let isCycling = false;
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // Overlay manager (UX feedback while bot runs)
+  // ────────────────────────────────────────────────────────────────────────────
+  const Overlay = {
+    ensure() {
+      if (this.el) return;
+      this.el = document.createElement('div');
+      this.el.id = 'mpBotOverlay';
+      Object.assign(this.el.style, {
+        position: 'fixed',
+        inset: '0',
+        background: 'rgba(0,123,255,0.25)',
+        backdropFilter: 'blur(2px)',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: '2147483647'
+      });
+      const msg = document.createElement('div');
+      msg.id = 'mpBotOverlayMsg';
+      msg.style.cssText = 'color:#fff;font-size:20px;text-align:center;margin-bottom:16px;font-weight:bold;text-shadow:0 1px 2px rgba(0,0,0,.4);max-width:80%;';
+      this.msg = msg;
+      this.el.appendChild(msg);
+
+      const btn = document.createElement('button');
+      btn.textContent = 'DETENER';
+      btn.style.cssText = 'padding:8px 16px;font-size:16px;background:#dc3545;color:#fff;border:none;border-radius:4px;cursor:pointer;';
+      btn.addEventListener('click', () => {
+        isCycling = false;
+        this.update('Detenido por usuario');
+        setTimeout(() => this.hide(), 800);
+      });
+      this.el.appendChild(btn);
+
+      document.body.appendChild(this.el);
+    },
+    show(text = 'Ejecutando...') {
+      this.ensure();
+      this.update(text);
+      this.el.style.display = 'flex';
+    },
+    update(text) {
+      if (!this.el) this.ensure();
+      this.msg.textContent = text;
+    },
+    hide() {
+      if (this.el) {
+        this.el.remove();
+        this.el = null;
+      }
+    }
+  };
 
   // ────────────────────────────────────────────────────────────────────────────
   // Utilities
@@ -272,8 +328,10 @@
       const chats = await this.scanTopChats(chatLimit);
       const results = [];
 
+      Overlay.show(`Escaneando ${chats.length} chats...`);
       log(`Starting detailed scan of ${chats.length} chats`);
-      for (let i = 0; i < chats.length; i++) {
+      for (let i = 0; i < chats.length && isCycling; i++) {
+        Overlay.update(`(${i + 1}/${chats.length}) Escaneando: ${chats[i].title}`);
         const { id, title } = chats[i];
         log(`(${i + 1}/${chats.length}) Opening chat ${id}`);
         await this.openChatById(id);
@@ -302,6 +360,8 @@
       }
 
       isCycling = false;
+      Overlay.update('Completado');
+      setTimeout(() => Overlay.hide(), 1000);
       log('Detailed scan completed', results);
       return results;
     }
@@ -388,7 +448,26 @@
   // ────────────────────────────────────────────────────────────────────────────
   function init() {
     log('Content script initialised', window.location.href);
+
     chrome.runtime.onMessage.addListener(handleMessage);
+
+    // Listener for simplified popup commands
+    chrome.runtime.onMessage.addListener(async (req, sender, sendResponse) => {
+      if (req.action === MSG.START_BOT) {
+        if (isCycling) { sendResponse({ started: false, reason: 'already_running' }); return; }
+        const limit = req.chatLimit || CONFIG.DEFAULT_CHAT_LIMIT;
+        Overlay.show('Preparando...');
+        ChatScanner.collectChatsData(limit, CONFIG.DEFAULT_MSG_LIMIT, CONFIG.DEFAULT_DELAY_MS)
+          .then(() => { Overlay.update('Completado'); setTimeout(() => Overlay.hide(), 1000); });
+        sendResponse({ started: true });
+      } else if (req.action === MSG.STOP_BOT) {
+        isCycling = false;
+        Overlay.update('Deteniendo...');
+        setTimeout(() => Overlay.hide(), 800);
+        sendResponse({ stopped: true });
+      }
+    });
+
     onUrlChange();
   }
 
