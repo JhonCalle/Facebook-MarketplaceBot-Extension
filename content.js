@@ -23,46 +23,26 @@ function init() {
     debugLog('Received action:', request.action);
 
     switch (request.action) {
-      case 'ping':
-        sendResponse({ status: 'active' });
-        return true;
-
-      case 'scanTitle':
-        sendResponse({ title: extractChatTitle() });
-        return true;
-
-      case 'scanMessages':
-        chrome.storage.local.get(['scanLimit'], async result => {
-          const limit    = parseInt(result.scanLimit, 10) || 10;
-          const messages = await extractLastMessages(limit);
-          sendResponse({ messages });
-        });
-        return true;
-
-      case 'scanTopChats':
-        sendResponse({ chats: scanTopChats() });
-        return true;
-
-      case 'cycleChats':
-        startChatCycling();
-        sendResponse({ started: true, total: scanTopChats().length });
-        return true;
+      // ---------------- EXISTENTES ----------------
+      case 'ping':           sendResponse({ status: 'active' }); return true;
+      case 'scanTitle':      sendResponse({ title: extractChatTitle() }); return true;
+      case 'scanMessages':   handleScanMessages(request, sendResponse);           return true;
+      case 'scanTopChats':   sendResponse({ chats: scanTopChats() });             return true;
+      case 'cycleChats':     startChatCycling(); sendResponse({ started: true }); return true;
+      case 'scanChatsDetailed': handleScanChatsDetailed(sendResponse);            return true;
 
       // ---------------- NUEVA ACCIÓN ----------------
-      case 'scanChatsDetailed':
-        chrome.storage.local.get(['scanLimit'], async result => {
-          const msgLimit = parseInt(result.scanLimit, 10) || 10;
-          const data     = await collectChatsData(10, msgLimit, 1800);
-          sendResponse({ chatsData: data });
-        });
-        return true; // mantener canal abierto hasta que se resuelva la promesa
-
+      case 'sendTestReply': {
+        const ok = sendTestReply();
+        sendResponse({ sent: ok });
+        return true;
+      }
       default:
         return false;
     }
   });
 
-  // Observador de cambios de URL (sin cambios)
+  // Observador de cambios de URL (se conserva)
   let lastUrl = location.href;
   new MutationObserver(() => {
     if (location.href !== lastUrl) {
@@ -75,6 +55,42 @@ function init() {
   }).observe(document, { childList: true, subtree: true });
 
   debugLog('Content script initialized');
+}
+
+// -----------------------------------------------------------------------------
+// Acción: enviar respuesta de prueba
+// -----------------------------------------------------------------------------
+async function sendTestReply(text = 'respuesta de prueba') {
+  try {
+    const composer = document.querySelector('[contenteditable="true"][role="textbox"]');
+    if (!composer) {
+      debugLog('Composer not found – aborting sendTestReply');
+      return false;
+    }
+
+    // Foco y limpieza
+    composer.focus();
+    document.execCommand('selectAll', false, null);
+    document.execCommand('delete',     false, null);
+
+    // Insertar texto
+    document.execCommand('insertText', false, text);
+    composer.dispatchEvent(new InputEvent('input', { bubbles: true }));
+
+    await new Promise(r => setTimeout(r, 1000));
+
+    // Simular tecla Enter para enviar
+    const enterDown = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
+    const enterUp   = new KeyboardEvent('keyup',   { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
+    composer.dispatchEvent(enterDown);
+    composer.dispatchEvent(enterUp);
+
+    debugLog('Mensaje enviado con éxito');
+    return true;
+  } catch (err) {
+    debugLog('Error en sendTestReply', err);
+    return false;
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -200,6 +216,22 @@ function extractChatTitle() {
   const span = document.querySelector('h2 span[dir="auto"]');
   if (span) return span.textContent.trim();
   return document.title;
+}
+
+function handleScanMessages(_request, sendResponse) {
+  chrome.storage.local.get(['scanLimit'], async result => {
+    const limit    = parseInt(result.scanLimit, 10) || 10;
+    const messages = await extractLastMessages(limit);
+    sendResponse({ messages });
+  });
+}
+
+function handleScanChatsDetailed(sendResponse) {
+  chrome.storage.local.get(['scanLimit'], async result => {
+    const msgLimit = parseInt(result.scanLimit, 10) || 10;
+    const data     = await collectChatsData(10, msgLimit, 1800);
+    sendResponse({ chatsData: data });
+  });
 }
 
 async function extractLastMessages(count) {

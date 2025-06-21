@@ -16,6 +16,7 @@ function debugLog(message, data) {
   addLogEntry(logText);
 }
 
+
 document.addEventListener('DOMContentLoaded', () => {
   const toggleButton      = document.getElementById('toggleButton');
   const statusDot         = document.getElementById('statusDot');
@@ -123,7 +124,8 @@ document.addEventListener('DOMContentLoaded', () => {
     { id: 'scanTitleButton',           action: 'scanTitle' },
     { id: 'scanMessagesButton',        action: 'scanMessages' },
     { id: 'scanTopChatsButton',        action: 'scanTopChats' },
-    { id: 'scanChatsDetailedButton',   action: 'scanChatsDetailed' }, // <- NUEVO
+    { id: 'scanChatsDetailedButton',   action: 'scanChatsDetailed' },
+    { id: 'sendTestReplyButton',       action: 'sendTestReply' },   // <‑‑ NUEVO
     { id: 'cycleChatsButton',          action: 'cycleChats' }
   ];
 
@@ -133,34 +135,29 @@ document.addEventListener('DOMContentLoaded', () => {
     btn.addEventListener('click', async () => {
       debugLog(`Ejecutando acción: ${action}`);
       const ready = await ensureContentScript();
-      if (!ready) {
-        debugLog('Content script no disponible.');
-        return;
-      }
+      if (!ready) { debugLog('Content script no disponible.'); return; }
+
       chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
         chrome.tabs.sendMessage(tabs[0].id, { action }, response => {
-          if (!response) {
-            debugLog('Sin respuesta del content script.');
-            return;
-          }
+          if (!response) { debugLog('Sin respuesta del content script.'); return; }
 
-          // Manejo especializado para la nueva acción
-          if (response.chatsData) {
-            const jsonStr = JSON.stringify(response.chatsData, null, 2);
-            debugLog('JSON chatsData:', jsonStr);
-            console.log('Chats detallados:', response.chatsData);
+          if (action === 'sendTestReply') {
+            debugLog(response.sent ? 'Mensaje enviado ✔️' : 'No se pudo enviar el mensaje ❌');
             return;
           }
 
           // --- manejadores existentes ---
+          if (response.chatsData) {
+            const jsonStr = JSON.stringify(response.chatsData, null, 2);
+            debugLog('JSON chatsData:', jsonStr);
+            return;
+          }
           if (response.chats) {
             response.chats.forEach((c, i) => debugLog(`#${i + 1}: ${c.title} (ID: ${c.id})`));
           } else if (response.messages) {
             response.messages.forEach((m, i) => debugLog(`#${i + 1} [${m.sender}]: ${m.text}`));
           } else if (response.title) {
             debugLog(`Chat title: ${response.title}`);
-          } else if (action === 'cycleChats') {
-            debugLog(`Ciclo de chats iniciado (${response.total || 'desconocido'} chats)`);
           }
         });
       });
