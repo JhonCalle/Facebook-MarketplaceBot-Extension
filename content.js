@@ -1,14 +1,14 @@
-// content.js – clasificación buyer/seller usando "Enviaste" y filtrado tras "inició este chat"
+// content.js – clasificación buyer/seller + ciclo de navegación secuencial por chats
 // -----------------------------------------------------------------------------
+
+let isCycling = false; // evita múltiples ejecuciones simultáneas
 
 function debugLog(message, data) {
   console.log(`[Marketplace Bot] ${message}`, data || '');
   chrome.runtime.sendMessage({ action: 'log', message, data });
 }
 
-document.readyState === 'loading'
-  ? document.addEventListener('DOMContentLoaded', init)
-  : init();
+document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', init) : init();
 
 function init() {
   debugLog('Content script loaded:', window.location.href);
@@ -21,36 +21,35 @@ function init() {
         sendResponse({ status: 'active' });
         return true;
 
-      case 'scanTitle': {
-        const title = extractChatTitle();
-        debugLog('Extracted title:', title);
-        sendResponse({ title });
+      case 'scanTitle':
+        sendResponse({ title: extractChatTitle() });
         return true;
-      }
 
-      case 'scanMessages': {
-        chrome.storage.local.get(['scanLimit'], async (result) => {
+      case 'scanMessages':
+        debugLog('scanMessages recibido, extrayendo mensajes...');
+        chrome.storage.local.get(['scanLimit'], async result => {
           const limit = parseInt(result.scanLimit, 10) || 10;
           const messages = await extractLastMessages(limit);
-          debugLog('Extracted messages:', messages);
+          debugLog(`Mensajes extraídos (${messages.length}):`, messages);
           sendResponse({ messages });
         });
         return true;
-      }
 
-      case 'scanTopChats': {
-        const topChats = scanTopChats();
-        debugLog('Top 10 chats scanned:', topChats);
-        sendResponse({ chats: topChats });
+      case 'scanTopChats':
+        sendResponse({ chats: scanTopChats() });
         return true;
-      }
+
+      case 'cycleChats':
+        startChatCycling();
+        sendResponse({ started: true, total: scanTopChats().length });
+        return true;
 
       default:
         return false;
     }
   });
 
-  // Observador de URL para detectar cambios en Marketplace
+  // Observador de URL ... (sin cambios)
   let lastUrl = location.href;
   new MutationObserver(() => {
     if (location.href !== lastUrl) {
@@ -63,6 +62,44 @@ function init() {
   }).observe(document, { childList: true, subtree: true });
 
   debugLog('Content script initialized');
+}
+
+// -----------------------------------------------------------------------------
+// NUEVA FUNCIÓN: navegar secuencialmente por los chats
+// -----------------------------------------------------------------------------
+function startChatCycling(delay = 3000) {
+  if (isCycling) {
+    debugLog('Ya existe un ciclo en ejecución; ignorando solicitud');
+    return;
+  }
+  isCycling = true;
+
+  const chats   = scanTopChats();
+  const chatIds = chats.map(c => c.id).filter(Boolean);
+  let index     = 0;
+
+  debugLog(`Iniciando recorrido por ${chatIds.length} chats`);
+
+  (function next() {
+    if (index >= chatIds.length) {
+      debugLog('Ciclo completado');
+      isCycling = false;
+      return;
+    }
+
+    const id = chatIds[index++];
+    debugLog(`(${index}/${chatIds.length}) Abriendo chat ID: ${id}`);
+
+    // Intenta usar click para navegación SPA; fallback cambia href
+    const link = document.querySelector(`a[role="link"][href*="/t/${id}"]`);
+    if (link) {
+      link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    } else {
+      window.location.href = `https://www.messenger.com/t/${id}`;
+    }
+
+    setTimeout(next, delay);
+  })();
 }
 
 // -----------------------------------------------------------------------------
@@ -157,28 +194,37 @@ async function extractLastMessages(count) {
     debugLog('Sliced after marker at index', markerIndex);
   }
 
+  // Definición de expresiones regulares para filtrar metadatos
   const timeRegex = /^\d{1,2}:\d{2}(?:\s?[ap]m)?$/i;
   const dateTimeRegex = /\d{1,2}\s(?:ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)\s\d{4},?\s\d{1,2}:\d{2}/i;
+  const numericDateRegex = /^\d{1,2}\/\d{1,2}\/\d{2,4},?\s?\d{1,2}:\d{2}(?:\s?[ap]m)?$/i;
   const relativeTimeRegex = /^enviado hace\s?\d+/i;
-  const waitingRegex = /está esperando tu respuesta/i;
+  const awaitingResponseRegex = /está esperando tu respuesta/i;
   const viewPostRegex = /ver publicación/i;
-  const buyerName = extractChatTitle().split(/[\s·-]/)[0].trim().toLowerCase();
-  const messagesend = /Message sent/i;
+  const sentRegex = /message sent/i;
+  const soloEnviadoRegex = /^enviado$/i;
 
+  // Obtener nombre del comprador para excluirlo
+  const buyerName = extractChatTitle().split(/[\s·-]/)[0]?.trim().toLowerCase();
+
+  // Filtrado de mensajes
   const filtered = messages.filter(m => {
-    const t = m.text;
+    const t = m.text?.trim();
     if (!t) return false;
     if (t === 'Enter') return false;
     if (/^enviaste$/i.test(t)) return false;
+    if (soloEnviadoRegex.test(t)) return false;
     if (t.toLowerCase() === buyerName) return false;
     if (timeRegex.test(t)) return false;
-    if (dateTimeRegex.test(t)) return false;
+    if (dateTimeRegex.test(t) || numericDateRegex.test(t)) return false;
     if (relativeTimeRegex.test(t)) return false;
-    if (waitingRegex.test(t)) return false;
+    if (awaitingResponseRegex.test(t)) return false;
     if (viewPostRegex.test(t)) return false;
-    if (messagesend.test(t)) return false;
+    if (sentRegex.test(t)) return false;
     return true;
   });
 
+  // Devolver solo los últimos 'count' mensajes relevantes
   return filtered.slice(-count);
 }
+
