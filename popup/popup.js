@@ -120,10 +120,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ---- Botones de debug / acciones ----
   const scanButtons = [
-    { id: 'scanTitleButton',      action: 'scanTitle' },
-    { id: 'scanMessagesButton',   action: 'scanMessages' },
-    { id: 'scanTopChatsButton',   action: 'scanTopChats' },
-    { id: 'cycleChatsButton',     action: 'cycleChats' } // NUEVO
+    { id: 'scanTitleButton',           action: 'scanTitle' },
+    { id: 'scanMessagesButton',        action: 'scanMessages' },
+    { id: 'scanTopChatsButton',        action: 'scanTopChats' },
+    { id: 'scanChatsDetailedButton',   action: 'scanChatsDetailed' }, // <- NUEVO
+    { id: 'cycleChatsButton',          action: 'cycleChats' }
   ];
 
   scanButtons.forEach(({ id, action }) => {
@@ -136,28 +137,30 @@ document.addEventListener('DOMContentLoaded', () => {
         debugLog('Content script no disponible.');
         return;
       }
-  
       chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
         chrome.tabs.sendMessage(tabs[0].id, { action }, response => {
-          if (!response && action !== 'cycleChats') {
-            debugLog('No response from content script. ¿Estás en una conversación de Marketplace?');
-            alert('No se pudo obtener respuesta del script de la página.\n\nAsegúrate de estar en una conversación de Marketplace.');
+          if (!response) {
+            debugLog('Sin respuesta del content script.');
             return;
           }
-  
-          if (response?.chats) {
+
+          // Manejo especializado para la nueva acción
+          if (response.chatsData) {
+            const jsonStr = JSON.stringify(response.chatsData, null, 2);
+            debugLog('JSON chatsData:', jsonStr);
+            console.log('Chats detallados:', response.chatsData);
+            return;
+          }
+
+          // --- manejadores existentes ---
+          if (response.chats) {
             response.chats.forEach((c, i) => debugLog(`#${i + 1}: ${c.title} (ID: ${c.id})`));
-  
-          } else if (response?.messages) {
-            response.messages.slice(-scanLimit)
-              .forEach((m, i) => debugLog(`#${i + 1} [${m.sender}]: ${m.text}`));
-  
-          } else if (response?.title) {
-            // Nueva rama para mostrar el título del chat
+          } else if (response.messages) {
+            response.messages.forEach((m, i) => debugLog(`#${i + 1} [${m.sender}]: ${m.text}`));
+          } else if (response.title) {
             debugLog(`Chat title: ${response.title}`);
-  
           } else if (action === 'cycleChats') {
-            debugLog(`Ciclo de chats iniciado (${response?.total || 'desconocido'} chats)`);
+            debugLog(`Ciclo de chats iniciado (${response.total || 'desconocido'} chats)`);
           }
         });
       });

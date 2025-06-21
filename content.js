@@ -1,7 +1,13 @@
-// content.js – clasificación buyer/seller + ciclo de navegación secuencial por chats
+// ============================================================================
+// UPDATED FILE: content.js – navegación y extracción de chats detallada
+// ----------------------------------------------------------------------------
+
+// Este script ahora incluye la acción "scanChatsDetailed" que recorre los últimos
+// 10 chats de Marketplace, entra en cada uno, extrae el título y los últimos
+// mensajes (etiquetados buyer/seller) y devuelve un arreglo JSON al popup.
 // -----------------------------------------------------------------------------
 
-let isCycling = false; // evita múltiples ejecuciones simultáneas
+let isCycling = false; // evita ciclos simultáneos
 
 function debugLog(message, data) {
   console.log(`[Marketplace Bot] ${message}`, data || '');
@@ -26,11 +32,9 @@ function init() {
         return true;
 
       case 'scanMessages':
-        debugLog('scanMessages recibido, extrayendo mensajes...');
         chrome.storage.local.get(['scanLimit'], async result => {
-          const limit = parseInt(result.scanLimit, 10) || 10;
+          const limit    = parseInt(result.scanLimit, 10) || 10;
           const messages = await extractLastMessages(limit);
-          debugLog(`Mensajes extraídos (${messages.length}):`, messages);
           sendResponse({ messages });
         });
         return true;
@@ -44,12 +48,21 @@ function init() {
         sendResponse({ started: true, total: scanTopChats().length });
         return true;
 
+      // ---------------- NUEVA ACCIÓN ----------------
+      case 'scanChatsDetailed':
+        chrome.storage.local.get(['scanLimit'], async result => {
+          const msgLimit = parseInt(result.scanLimit, 10) || 10;
+          const data     = await collectChatsData(10, msgLimit, 1800);
+          sendResponse({ chatsData: data });
+        });
+        return true; // mantener canal abierto hasta que se resuelva la promesa
+
       default:
         return false;
     }
   });
 
-  // Observador de URL ... (sin cambios)
+  // Observador de cambios de URL (sin cambios)
   let lastUrl = location.href;
   new MutationObserver(() => {
     if (location.href !== lastUrl) {
@@ -65,32 +78,27 @@ function init() {
 }
 
 // -----------------------------------------------------------------------------
-// NUEVA FUNCIÓN: navegar secuencialmente por los chats
+// NUEVA FUNCIÓN PRINCIPAL – recorrido secuencial y extracción de datos
 // -----------------------------------------------------------------------------
-function startChatCycling(delay = 3000) {
+async function collectChatsData(chatLimit = 10, messagesLimit = 10, delay = 1500) {
   if (isCycling) {
-    debugLog('Ya existe un ciclo en ejecución; ignorando solicitud');
-    return;
+    debugLog('Otro ciclo está en ejecución; abortando collectChatsData');
+    return [];
   }
   isCycling = true;
 
-  const chats   = scanTopChats();
-  const chatIds = chats.map(c => c.id).filter(Boolean);
-  let index     = 0;
+  const chats   = scanTopChats().slice(0, chatLimit);
+  const results = [];
 
-  debugLog(`Iniciando recorrido por ${chatIds.length} chats`);
+  debugLog(`Comenzando extracción detallada de ${chats.length} chats`);
 
-  (function next() {
-    if (index >= chatIds.length) {
-      debugLog('Ciclo completado');
-      isCycling = false;
-      return;
-    }
+  for (let i = 0; i < chats.length; i++) {
+    const { id, title } = chats[i];
+    if (!id) continue;
 
-    const id = chatIds[index++];
-    debugLog(`(${index}/${chatIds.length}) Abriendo chat ID: ${id}`);
+    debugLog(`(${i + 1}/${chats.length}) Abriendo chat ID: ${id}`);
 
-    // Intenta usar click para navegación SPA; fallback cambia href
+    // Navegación SPA; fallback a cambio de href completo
     const link = document.querySelector(`a[role="link"][href*="/t/${id}"]`);
     if (link) {
       link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
@@ -98,8 +106,47 @@ function startChatCycling(delay = 3000) {
       window.location.href = `https://www.messenger.com/t/${id}`;
     }
 
-    setTimeout(next, delay);
-  })();
+    // Esperar a que cargue el chat (header con título y al menos 1 mensaje)
+    await waitFor(() => document.querySelector('header[role="banner"]'));
+    await waitFor(() => document.querySelector('div[data-testid="message-group"], div[role="row"]'));
+
+    // Pequeña pausa extra para asegurar renderizado
+    await new Promise(r => setTimeout(r, 400));
+
+    const chatTitle = extractChatTitle();
+    const messages  = await extractLastMessages(messagesLimit);
+
+    results.push({
+      clientName : chatTitle.split(/\s/)[0] || chatTitle,
+      chatName   : chatTitle,
+      messages   : messages
+    });
+
+    // Esperar antes de abrir el siguiente chat
+    await new Promise(r => setTimeout(r, delay));
+  }
+
+  debugLog('Extracción completa', results);
+  isCycling = false;
+  return results;
+}
+
+// -----------------------------------------------------------------------------
+// Utilidad: espera hasta que la condición sea verdadera o venza el timeout
+// -----------------------------------------------------------------------------
+function waitFor(conditionFn, interval = 100, timeout = 5000) {
+  return new Promise((resolve) => {
+    const start    = Date.now();
+    const timerId  = setInterval(() => {
+      if (conditionFn()) {
+        clearInterval(timerId);
+        resolve();
+      } else if (Date.now() - start > timeout) {
+        clearInterval(timerId);
+        resolve();
+      }
+    }, interval);
+  });
 }
 
 // -----------------------------------------------------------------------------
