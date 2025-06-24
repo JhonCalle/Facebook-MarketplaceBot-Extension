@@ -101,6 +101,12 @@
       btn.addEventListener('click', () => {
         isCycling = false;
         this.update('Detenido por usuario');
+        const composer = document.querySelector(SELECTORS.composer);
+        if (composer) {
+          composer.focus();
+          document.execCommand('selectAll', false, null);
+          document.execCommand('delete', false, null);
+        }
         setTimeout(() => this.hide(), 800);
       });
       this.el.appendChild(btn);
@@ -405,6 +411,7 @@
         // ────────────────────────────────────────────────────────────────
         // 1) Enviar datos al webhook y obtener la respuesta
         // ────────────────────────────────────────────────────────────────
+        Overlay.update('Generando respuesta...');
         const { reply } = await ApiClient.sendChat({ chatId, clientName, listing, chatName: chatTitle, messages });
 
         // ────────────────────────────────────────────────────────────────
@@ -423,6 +430,7 @@
 
         // Si el usuario no canceló, enviar la respuesta
         if (isCycling) {
+          Overlay.update('Enviando respuesta...');
           await Messenger.sendMessage(reply);
         } else {
           log('Envío cancelado por el usuario');
@@ -539,6 +547,12 @@
         sendResponse({ started: true });
       } else if (req.action === MSG.STOP_BOT) {
         isCycling = false;
+        const composer = document.querySelector(SELECTORS.composer);
+        if (composer) {
+          composer.focus();
+          document.execCommand('selectAll', false, null);
+          document.execCommand('delete', false, null);
+        }
         Overlay.update('Deteniendo...');
         setTimeout(() => Overlay.hide(), 800);
         sendResponse({ stopped: true });
