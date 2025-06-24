@@ -53,6 +53,21 @@
     topChatLinks    : 'a[role="link"][href*="/t/"]'
   };
 
+  // Simple storage helper used throughout the script
+  const Storage = {
+    /**
+     * Retrieve a numeric value from chrome.storage.local, returning
+     * `fallback` when the value is missing or invalid.
+     */
+    async getNumber(key, fallback) {
+      return new Promise(resolve => {
+        chrome.storage.local.get([key], result => {
+          resolve(parseInt(result[key], 10) || fallback);
+        });
+      });
+    }
+  };
+
   // Regex pre‑compilation ------------------------------------------------------
   const REGEX = {
     markerChatStart  : /inició este chat/i,
@@ -73,7 +88,9 @@
   // ────────────────────────────────────────────────────────────────────────────
   // Overlay manager (UX feedback while bot runs)
   // ────────────────────────────────────────────────────────────────────────────
+  // Lightweight UI overlay displayed while the bot is scanning chats.
   const Overlay = {
+    // Create DOM elements if they do not exist yet
     ensure() {
       if (this.el) return;
       this.el = document.createElement('div');
@@ -107,15 +124,18 @@
 
       document.body.appendChild(this.el);
     },
+    // Display the overlay with an optional message
     show(text = 'Ejecutando...') {
       this.ensure();
       this.update(text);
       this.el.style.display = 'flex';
     },
+    // Update the text shown on the overlay
     update(text) {
       if (!this.el) this.ensure();
       this.msg.textContent = text;
     },
+    // Remove the overlay from the page
     hide() {
       if (this.el) {
         this.el.remove();
@@ -207,6 +227,10 @@
       await new Promise(resolve => setTimeout(resolve, 100));
     },
 
+    /**
+     * Sends a message through the open Messenger chat.
+     * Returns true on success and false if the composer could not be found.
+     */
     async sendMessage(text) {
       const composer = this.focusComposer();
       if (!composer) {
@@ -457,7 +481,7 @@
           break;
 
         case MSG.SCAN_MESSAGES: {
-          const limit = await getStoredNumber('scanLimit', CONFIG.DEFAULT_MSG_LIMIT);
+          const limit = await Storage.getNumber('scanLimit', CONFIG.DEFAULT_MSG_LIMIT);
           const messages = await Messenger.extractLastMessages(limit);
           sendResponse({ messages });
           break;
@@ -473,7 +497,7 @@
           break;
 
         case MSG.SCAN_DETAILED: {
-          const msgLimit = await getStoredNumber('scanLimit', CONFIG.DEFAULT_MSG_LIMIT);
+          const msgLimit = await Storage.getNumber('scanLimit', CONFIG.DEFAULT_MSG_LIMIT);
           const data = await ChatScanner.collectChatsData(CONFIG.DEFAULT_CHAT_LIMIT, msgLimit, CONFIG.DEFAULT_DELAY_MS);
           sendResponse({ chatsData: data });
           break;
@@ -499,14 +523,9 @@
   // ────────────────────────────────────────────────────────────────────────────
   // Helpers
   // ────────────────────────────────────────────────────────────────────────────
-  async function getStoredNumber(key, fallback) {
-    return new Promise(resolve => {
-      chrome.storage.local.get([key], result => {
-        resolve(parseInt(result[key], 10) || fallback);
-      });
-    });
-  }
 
+  // Detect single-page navigation and trigger a check when navigating to
+  // the Marketplace chat view.
   function onUrlChange() {
     let lastUrl = location.href;
     new MutationObserver(() => {
@@ -521,7 +540,7 @@
   }
 
   // ────────────────────────────────────────────────────────────────────────────
-  // Boot
+  // Boot sequence
   // ────────────────────────────────────────────────────────────────────────────
   function init() {
     log('Content script initialised', window.location.href);
