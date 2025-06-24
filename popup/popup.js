@@ -1,5 +1,5 @@
-// popup.js – lógica del popup de la extensión con límite configurable + ciclo de chats
-// -----------------------------------------------------------------------------
+// popup.js – UI logic for the extension popup
+// This script drives the popup controls and debug tools.
 
 function addLogEntry(entry) {
   const logList = document.getElementById('logEntries');
@@ -122,6 +122,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  // Refresh popup controls based on current extension state
   function updateUI() {
     if (isActive) {
       statusDot.classList.add('active');
@@ -135,6 +136,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ----- UTILITIES -----
+  // Ensures the content script is loaded on the active tab.
   async function ensureContentScript() {
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tabs[0]?.id) {

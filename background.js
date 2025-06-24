@@ -1,68 +1,86 @@
-// Store the state of the auto-responder
+/**
+ * background.js – service worker keeping global extension state.
+ * It relays messages between the popup and content scripts and
+ * starts/stops the polling that checks for new Marketplace chats.
+ */
+
+// Keeps track of whether the auto-responder is enabled.
 let isAutoResponderActive = false;
 
-// Debug logging function
+// Convenience logger used across handlers.
 function debugLog(message, data) {
   console.log(`[Marketplace Bot - Background] ${message}`, data || '');
 }
 
-// Listen for messages from popup or content scripts
+// ---------------------------------------------------------------------------
+// Messaging
+// ---------------------------------------------------------------------------
+
+/**
+ * Individual message handlers keyed by the action name.
+ * Each handler returns `true` when `sendResponse` should remain open.
+ */
+const messageHandlers = {
+  toggleAutoResponder(_req, sendResponse) {
+    isAutoResponderActive = !isAutoResponderActive;
+    chrome.storage.local.set({ autoResponderActive: isAutoResponderActive });
+
+    if (isAutoResponderActive) {
+      startMessageChecker();
+    } else {
+      stopMessageChecker();
+    }
+
+    sendResponse({ isActive: isAutoResponderActive });
+    debugLog('Auto-responder toggled:', isAutoResponderActive);
+    return true;
+  },
+
+  getStatus(_req, sendResponse) {
+    sendResponse({ isActive: isAutoResponderActive });
+    return true;
+  },
+
+  processNewMessage(req) {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const tab = tabs[0];
+      if (tab) {
+        chrome.tabs.sendMessage(tab.id, {
+          action: 'processMessage',
+          messageData: req.messageData
+        }).catch(err => debugLog('Error forwarding processMessage:', err));
+      }
+    });
+    return false;
+  },
+
+  log(req) {
+    chrome.runtime.sendMessage({
+      action: 'logToPopup',
+      message: req.message,
+      data: req.data
+    }).catch(err => {
+      console.log(`[Marketplace Bot Log] ${req.message}`, req.data || '');
+      debugLog('Error forwarding log:', err);
+    });
+    return false;
+  },
+
+  ping(_req, sendResponse) {
+    sendResponse({ status: 'active' });
+    return true;
+  }
+};
+
+// Central message dispatcher
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   debugLog('Received message:', request.action);
-  
+
+  const handler = messageHandlers[request.action];
+  if (!handler) return false;
+
   try {
-    switch (request.action) {
-      case 'toggleAutoResponder':
-        isAutoResponderActive = !isAutoResponderActive;
-        // Save the state to chrome.storage
-        chrome.storage.local.set({ autoResponderActive: isAutoResponderActive });
-        
-        // Start/stop the message checker based on the state
-        if (isAutoResponderActive) {
-          startMessageChecker();
-        } else {
-          stopMessageChecker();
-        }
-        
-        // Send response back to the sender
-        sendResponse({ isActive: isAutoResponderActive });
-        debugLog('Auto-responder toggled:', isAutoResponderActive);
-        return true; // Required for async sendResponse
-        
-      case 'getStatus':
-        sendResponse({ isActive: isAutoResponderActive });
-        return true;
-        
-      case 'processNewMessage':
-        // Forward message processing to content script
-        chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
-          if (tabs[0]) {
-            chrome.tabs.sendMessage(tabs[0].id, {
-              action: 'processMessage',
-              messageData: request.messageData
-            }).catch(err => {
-              debugLog('Error sending processMessage to tab:', err);
-            });
-          }
-        });
-        break;
-        
-      case 'log':
-        // Forward logs to the popup if it's open
-        chrome.runtime.sendMessage({
-          action: 'logToPopup',
-          message: request.message,
-          data: request.data
-        }).catch(err => {
-          console.log(`[Marketplace Bot Log] ${request.message}`, request.data || '');
-        });
-        break;
-        
-      case 'ping':
-        // Simple ping to check if background script is active
-        sendResponse({ status: 'active' });
-        return true;
-    }
+    return handler(request, sendResponse);
   } catch (error) {
     debugLog('Error in message handler:', error);
     sendResponse({ error: error.message });
