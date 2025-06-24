@@ -44,10 +44,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ────────────────────────────────────────────────────────────────────
     // Nueva UI minimalista: selector de cantidad + botón EMPEZAR
-    // Ocultar secciones antiguas que ya no se usan
-    document.querySelectorAll('.debug-section, .status-container, .info-section').forEach(el => {
-      if (el) el.style.display = 'none';
-    });
+    // Mantener visibles las secciones de depuración
+    
 
     const container = document.querySelector('.container');
     if (container && !document.getElementById('chatCountInput')) {
@@ -158,12 +156,57 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ---- Botones de debug / acciones ----
+  // Add handler for testing line breaks
+  document.getElementById('testLineBreaksButton')?.addEventListener('click', async () => {
+    const testMessages = [
+      { 
+        name: 'Prueba de saltos de línea', 
+        text: 'Línea 1\nLínea 2 con más texto para probar\n\nLínea 3 con un salto doble antes' 
+      }
+    ];
+
+    for (const test of testMessages) {
+      debugLog(`\n--- Probando formato: ${test.name} ---`);
+      
+      try {
+        const ready = await ensureContentScript();
+        if (!ready) {
+          debugLog('Content script no disponible.');
+          continue;
+        }
+
+        await new Promise(resolve => {
+          chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
+            chrome.tabs.sendMessage(tabs[0].id, { 
+              action: 'sendTestReply',
+              testMessage: test.text
+            }, response => {
+              if (response?.sent) {
+                debugLog(`✅ Enviado: ${test.name}`);
+              } else {
+                debugLog(`❌ Falló: ${test.name}`);
+              }
+              resolve();
+            });
+          });
+        });
+        
+        // Esperar 2 segundos entre pruebas
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      } catch (error) {
+        debugLog(`❌ Error probando '${test.name}':`, error.message);
+      }
+    }
+    
+    debugLog('\n✅ Pruebas de formato completadas. Revisa los mensajes enviados.');
+  });
+
   const scanButtons = [
     { id: 'scanTitleButton',           action: 'scanTitle' },
     { id: 'scanMessagesButton',        action: 'scanMessages' },
     { id: 'scanTopChatsButton',        action: 'scanTopChats' },
     { id: 'scanChatsDetailedButton',   action: 'scanChatsDetailed' },
-    { id: 'sendTestReplyButton',       action: 'sendTestReply' },   // <‑‑ NUEVO
+    { id: 'sendTestReplyButton',       action: 'sendTestReply' },
     { id: 'cycleChatsButton',          action: 'cycleChats' }
   ];
 
@@ -180,8 +223,10 @@ document.addEventListener('DOMContentLoaded', () => {
           if (!response) { debugLog('Sin respuesta del content script.'); return; }
 
           if (action === 'sendTestReply') {
-            debugLog(response.sent ? 'Mensaje enviado ✔️' : 'No se pudo enviar el mensaje ❌');
-            return;
+            const success = response?.sent === true;
+            debugLog(success ? 'Mensaje de prueba enviado ✔️' : 'No se pudo enviar el mensaje de prueba ❌');
+            sendResponse({ success });
+            return true; // Mantener el puerto de mensajería abierto para la respuesta asíncrona
           }
 
           // --- manejadores existentes ---

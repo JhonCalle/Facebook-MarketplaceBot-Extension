@@ -91,7 +91,7 @@
       });
       const msg = document.createElement('div');
       msg.id = 'mpBotOverlayMsg';
-      msg.style.cssText = 'color:#fff;font-size:20px;text-align:center;margin-bottom:16px;font-weight:bold;text-shadow:0 1px 2px rgba(0,0,0,.4);max-width:80%;';
+      msg.style.cssText = 'color:#fff;font-size:20px;text-align:center;margin-bottom:16px;font-weight:bold;text-shadow:0 1px 2px rgba(0,0,0,.4);max-width:80%;white-space:pre-wrap;';
       this.msg = msg;
       this.el.appendChild(msg);
 
@@ -167,9 +167,44 @@
       document.execCommand('delete',   false, null);
     },
 
-    insertText(composer, text) {
-      document.execCommand('insertText', false, text);
-      composer.dispatchEvent(new InputEvent('input', { bubbles: true }));
+    /**
+     * Inserts text into the Messenger composer respecting line‑breaks.
+     *
+     * Facebook's composer treats a literal "Enter" keypress (without Shift)
+     * as a *send* action. To visually create a new line inside the same
+     * message, users press <Shift+Enter>, which inserts a <br> element.
+     *
+     * When we inject text programmatically with \n characters, Messenger
+     * previously ignored them and collapsed everything into a single line. We
+     * now split on \n and explicitly inject <br> between fragments, mimicking
+     * the native behaviour of <Shift+Enter>.
+     *
+     * @param {HTMLElement} composer – contenteditable composer element
+     * @param {string} text – full text including \n line breaks
+     */
+    async insertText(composer, text) {
+      const lines = text.split(/\n/g);
+      
+      // Usar Método 3 por defecto: <div> con <br> al final
+      const html = lines.map(line => 
+        `<div>${line}<br></div>`
+      ).join('');
+      document.execCommand('insertHTML', false, html);
+      
+      // Forzar actualización del contenido
+      composer.dispatchEvent(new InputEvent('input', { 
+        bubbles: true,
+        inputType: 'insertText',
+        data: text,
+        dataTransfer: new DataTransfer(),
+        isComposing: false
+      }));
+      
+      // Disparar evento de cambio
+      composer.dispatchEvent(new Event('change', { bubbles: true }));
+      
+      // Pequeña pausa para asegurar que todo se procese
+      await new Promise(resolve => setTimeout(resolve, 100));
     },
 
     async sendMessage(text) {
@@ -259,22 +294,39 @@
   const ApiClient = {
     /**
      * Send chatData to external server and return the response.
-     * @param {object} chatData – { clientName, chatName, messages }
+     * @param {object} chatData – { clientName, chatName, messages, chatId, listing }
      * @returns {Promise<{ reply: string } | null>}
      */
     async sendChat(chatData) {
-      // NOTE: Implementation will vary. This is only a stub.
+      const webhookUrl = 'https://n8nimpulsa.zapto.org/webhook-test/752e0505-3c13-4034-9bfd-3a870240c3cd';
+      
       try {
-        // Example: const resp = await fetch('https://example.com/api/reply', {
-        //   method: 'POST',
-        //   headers: { 'Content-Type': 'application/json' },
-        //   body: JSON.stringify(chatData)
-        // });
-        // return await resp.json();
-        return null; // placeholder
-      } catch (err) {
-        log('ApiClient error', err);
-        return null;
+        log('Sending chat data to webhook', { webhookUrl, chatData });
+        
+        const response = await fetch(webhookUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(chatData),
+        });
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const responseData = await response.json();
+        log('Webhook response received', responseData);
+        
+        return {
+          reply: responseData.response || 'Respuesta recibida del servidor sin contenido de respuesta.'
+        };
+        
+      } catch (error) {
+        console.error('Error sending data to webhook:', error);
+        return {
+          reply: `Error al conectar con el servidor: ${error.message}`
+        };
       }
     }
   };
@@ -283,27 +335,25 @@
   // ChatScanner – high‑level orchestration of chat traversal
   // ────────────────────────────────────────────────────────────────────────────
   const ChatScanner = {
-    async scanTopChats(limit = CONFIG.DEFAULT_CHAT_LIMIT) {
-      // Narrow search to Marketplace nav section if present
-      let container = document;
-      const spanMarketplace = Array.from(document.querySelectorAll('span[dir="auto"]'))
-        .find(el => el.textContent.trim() === 'Marketplace');
-      if (spanMarketplace) {
-        const nav = spanMarketplace.closest('div[role="navigation"]');
-        if (nav) container = nav;
-      }
-
-      const chats = Array.from(container.querySelectorAll(SELECTORS.topChatLinks))
-        .slice(0, limit)
+    async scanTopChats(baseFetch = 20) {
+      // Constrain search to Marketplace navigation if present
+      const container = (() => {
+        const spanMarketplace = Array.from(document.querySelectorAll('span[dir="auto"]'))
+          .find(el => el.textContent.trim() === 'Marketplace');
+        const nav = spanMarketplace?.closest('div[role="navigation"]');
+        return nav || document;
+      })();
+    
+      return Array.from(container.querySelectorAll(SELECTORS.topChatLinks))
+        .slice(0, baseFetch)            // ← ALWAYS grab up to 20 IDs
         .map(link => {
           const title = link.getAttribute('aria-label')?.trim() || link.textContent.trim();
           const id = (link.href.match(/\/t\/([^\/?#]+)/) || [])[1];
           return { id, title };
         })
         .filter(c => c.id);
-
-      return chats;
     },
+    
 
     async openChatById(id) {
       const link = document.querySelector(`a[role="link"][href*="/t/${id}"]`);
@@ -324,41 +374,66 @@
         return [];
       }
       isCycling = true;
-
-      const chats = await this.scanTopChats(chatLimit);
-      const results = [];
-
-      Overlay.show(`Escaneando ${chats.length} chats...`);
-      log(`Starting detailed scan of ${chats.length} chats`);
-      for (let i = 0; i < chats.length && isCycling; i++) {
-        Overlay.update(`(${i + 1}/${chats.length}) Escaneando: ${chats[i].title}`);
-        const { id, title } = chats[i];
-        log(`(${i + 1}/${chats.length}) Opening chat ${id}`);
+    
+      // Siempre obtenemos 20 IDs pero solo procesamos hasta "chatLimit"
+      const allChats      = await this.scanTopChats(20);
+      const stopCount     = Math.min(chatLimit, allChats.length);
+      const chatsToHandle = allChats.slice(0, stopCount);
+      const results       = [];
+    
+      Overlay.show(`Escaneando ${stopCount} chats...`);
+      log(`Starting detailed scan of ${stopCount} chats`);
+    
+      for (let i = 0; i < stopCount && isCycling; i++) {
+        const { id, title } = chatsToHandle[i];
+        Overlay.update(`(${i + 1}/${stopCount}) Escaneando: ${title}`);
+        log(`(${i + 1}/${stopCount}) Opening chat ${id}`);
+    
         await this.openChatById(id);
-
+    
         const chatTitle = Messenger.extractChatTitle();
         const messages  = await Messenger.extractLastMessages(msgLimit);
+        const chatId = id;
+    
+        // clientName  = parte antes de "·"; listing = parte después
+        const [clientName = chatTitle, listing = chatTitle] = chatTitle
+          .split('·')
+          .map(s => s.trim());
+    
+        results.push({ chatId, clientName, listing, chatName: chatTitle, messages });
 
-        // Split at '·' → antes = clientName, después = listing
-        const parts     = chatTitle.split('·').map(s => s.trim());
-        const clientName = parts[0] || chatTitle;
-        const listing    = parts[1] || chatTitle;
+        // ────────────────────────────────────────────────────────────────
+        // 1) Enviar datos al webhook y obtener la respuesta
+        // ────────────────────────────────────────────────────────────────
+        const { reply } = await ApiClient.sendChat({ chatId, clientName, listing, chatName: chatTitle, messages });
 
-        const chatData = {
-          clientName,
-          listing,
-          chatName : chatTitle,
-          messages
-        };
-        results.push(chatData);
+        // ────────────────────────────────────────────────────────────────
+        // 2) Mostrar pre-visualización durante 5 seg para permitir cancelar
+        // ────────────────────────────────────────────────────────────────
+        const previewText =
+          `Title chat ${chatTitle}\n` +
+          `Messages:\n${messages.map(m => `${m.sender}: ${m.text}`).join('\n')}\n` +
+          `Response to be send: ${reply}`;
 
-        // Future: Call external API and send reply ---------------------------
-        // const apiResp = await ApiClient.sendChat(chatData);
-        // if (apiResp?.reply) await Messenger.sendMessage(apiResp.reply);
+        Overlay.show(previewText);
 
+        for (let t = 0; t < 5000 && isCycling; t += 500) {
+          await delay(500);
+        }
+
+        // Si el usuario no canceló, enviar la respuesta
+        if (isCycling) {
+          await Messenger.sendMessage(reply);
+        } else {
+          log('Envío cancelado por el usuario');
+        }
+
+        Overlay.hide();
+
+        // Espera configurable antes de pasar al siguiente chat
         await delay(delayMs);
       }
-
+    
       isCycling = false;
       Overlay.update('Completado');
       setTimeout(() => Overlay.hide(), 1000);
@@ -404,9 +479,11 @@
           break;
         }
 
-        case MSG.SEND_TEST_REPLY:
-          sendResponse({ sent: await Messenger.sendMessage('respuesta de prueba') });
-          break;
+        case MSG.SEND_TEST_REPLY: {
+          const testMessage = request.testMessage || 'respuesta de prueba';
+          sendResponse({ sent: await Messenger.sendMessage(testMessage) });
+          return true; // Keep the message channel open for async response
+        }
 
         default:
           sendResponse({});
