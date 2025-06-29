@@ -373,13 +373,15 @@
         const nav = spanMarketplace?.closest('div[role="navigation"]');
         return nav || document;
       })();
-    
+
       return Array.from(container.querySelectorAll(SELECTORS.topChatLinks))
         .slice(0, baseFetch)            // ← ALWAYS grab up to 20 IDs
         .map(link => {
           const title = link.getAttribute('aria-label')?.trim() || link.textContent.trim();
           const id = (link.href.match(/\/t\/([^\/?#]+)/) || [])[1];
-          return { id, title };
+          const row = link.closest('[role="row"], li');
+          const unread = !!row?.querySelector('[aria-label*="unread" i], [aria-label*="nuevo" i], [aria-label*="new message" i]');
+          return { id, title, unread };
         })
         .filter(c => c.id);
     },
@@ -469,10 +471,27 @@
       isCycling = false;
       Overlay.update('Completado');
       setTimeout(() => Overlay.hide(), 1000);
-      log('Detailed scan completed', results);
-      return results;
-    }
-  };
+  log('Detailed scan completed', results);
+  return results;
+}
+};
+
+  // Detect chats marked as unread in the Marketplace interface
+  function checkForNewMessages() {
+    const unread = [];
+    const chatLinks = document.querySelectorAll(SELECTORS.topChatLinks);
+    chatLinks.forEach(link => {
+      const row = link.closest('[role="row"], li');
+      if (!row) return;
+      const hasBadge = row.querySelector('[aria-label*="unread" i], [aria-label*="nuevo" i], [aria-label*="new message" i]');
+      if (hasBadge) {
+        const id = (link.href.match(/\/t\/([^/?#]+)/) || [])[1];
+        const title = link.getAttribute('aria-label')?.trim() || link.textContent.trim();
+        if (id) unread.push({ id, title });
+      }
+    });
+    return unread;
+  }
 
   // ────────────────────────────────────────────────────────────────────────────
   // Message Handlers
@@ -498,6 +517,15 @@
         case MSG.SCAN_TOP:
           sendResponse({ chats: await ChatScanner.scanTopChats() });
           break;
+
+        case MSG.CHECK_NEW: {
+          const unread = checkForNewMessages();
+          sendResponse({ unread });
+          if (unread.length) {
+            chrome.runtime.sendMessage({ action: 'processNewMessage', messageData: unread });
+          }
+          break;
+        }
 
         case MSG.CYCLE_CHATS:
           ChatScanner.collectChatsData(CONFIG.DEFAULT_CHAT_LIMIT, CONFIG.DEFAULT_MSG_LIMIT, CONFIG.DEFAULT_DELAY_MS);

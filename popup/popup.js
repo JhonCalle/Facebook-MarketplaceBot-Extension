@@ -238,7 +238,10 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
           }
           if (response.chats) {
-            response.chats.forEach((c, i) => debugLog(`#${i + 1}: ${c.title} (ID: ${c.id})`));
+            response.chats.forEach((c, i) => {
+              const flag = c.unread ? 'UNREAD' : 'read';
+              debugLog(`#${i + 1}: ${c.title} (ID: ${c.id}) - ${flag}`);
+            });
           } else if (response.messages) {
             response.messages.forEach((m, i) => debugLog(`#${i + 1} [${m.sender}]: ${m.text}`));
           } else if (response.title) {

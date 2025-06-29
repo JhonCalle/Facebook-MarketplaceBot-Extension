@@ -110,7 +110,12 @@ function startMessageChecker() {
     chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
       if (tabs[0] && (tabs[0].url.includes('facebook.com/messages') || tabs[0].url.includes('messenger.com/marketplace'))) {
         // Send message to content script to check for new messages
-        chrome.tabs.sendMessage(tabs[0].id, { action: 'checkForNewMessages' });
+        chrome.tabs.sendMessage(tabs[0].id, { action: 'checkForNewMessages' }, (res) => {
+          if (chrome.runtime.lastError) return;
+          if (res && Array.isArray(res.unread) && res.unread.length) {
+            debugLog('Unread messages:', res.unread);
+          }
+        });
       }
     });
   }, 30000); // 30 seconds
