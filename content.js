@@ -156,9 +156,14 @@ const UNREAD_DOT_SELECTOR =
       if (!this.el) this.ensure();
       this.msg.innerHTML = text;
     },
-    updateStep(step, lines = []) {
-      const html = [`<div style="font-size:22px;margin-bottom:12px;">${step}</div>`]
-        .concat(lines.map(l => `<div style="margin:4px 0;">${l}</div>`)).join('<hr style="width:60%;border-color:#fff3;">');
+    updateStep(step, lines = [], countdown) {
+      const parts = [];
+      if (countdown !== undefined) {
+        parts.push(`<div style="font-size:28px;margin-bottom:8px;">${countdown}</div>`);
+      }
+      parts.push(`<div style="font-size:22px;margin-bottom:12px;">${step}</div>`);
+      parts.push(...lines.map(l => `<div style="margin:4px 0;">${l}</div>`));
+      const html = parts.join('<hr style="width:60%;border-color:#fff3;">');
       this.update(html);
     },
     // Remove the overlay from the page
@@ -197,8 +202,15 @@ const UNREAD_DOT_SELECTOR =
     return new Promise(r => setTimeout(r, ms));
   }
 
-  async function pause(ms) {
-    for (let t = 0; t < ms && isCycling; t += 500) {
+  async function pause(ms, step, lines = []) {
+    const end = Date.now() + ms;
+    let last = -1;
+    while (isCycling && Date.now() < end) {
+      const remaining = Math.ceil((end - Date.now()) / 1000);
+      if (step && remaining !== last) {
+        Overlay.updateStep(step, lines, `${remaining}s`);
+        last = remaining;
+      }
       await delay(500);
     }
   }
@@ -356,7 +368,7 @@ const UNREAD_DOT_SELECTOR =
     /**
      * Send chatData to external server and return the response.
      * @param {object} chatData – { clientName, chatName, messages, chatId, listing }
-     * @returns {Promise<{ reply: string } | null>}
+   * @returns {Promise<{ replies: string[] } | null>}
      */
     async sendChat(chatData) {
       const webhookUrl = 'https://n8nimpulsa.zapto.org/webhook/ImpulsaAIbot';
@@ -378,16 +390,23 @@ const UNREAD_DOT_SELECTOR =
         
         const responseData = await response.json();
         log('Webhook response received', responseData);
-        
-        return {
-          reply: responseData.response || 'Respuesta recibida del servidor sin contenido de respuesta.'
-        };
+
+        let replies = [];
+        if (Array.isArray(responseData.response)) {
+          replies = responseData.response;
+        } else if (typeof responseData.response === 'string') {
+          replies = [responseData.response];
+        }
+
+        if (!replies.length) {
+          replies = ['Respuesta recibida del servidor sin contenido de respuesta.'];
+        }
+
+        return { replies };
         
       } catch (error) {
         console.error('Error sending data to webhook:', error);
-        return {
-          reply: `Error al conectar con el servidor: ${error.message}`
-        };
+        return { replies: [`Error al conectar con el servidor: ${error.message}`] };
       }
     }
   };
@@ -486,7 +505,7 @@ const UNREAD_DOT_SELECTOR =
         // 1) Enviar datos al webhook y obtener la respuesta
         // ────────────────────────────────────────────────────────────────
         Overlay.update('Generando respuesta...');
-        const { reply } = await ApiClient.sendChat({ chatId, clientName, listing, chatName: chatTitle, messages });
+        const { replies } = await ApiClient.sendChat({ chatId, clientName, listing, chatName: chatTitle, messages });
 
         // ────────────────────────────────────────────────────────────────
         // 2) Mostrar pre-visualización durante 5 seg para permitir cancelar
@@ -494,7 +513,7 @@ const UNREAD_DOT_SELECTOR =
         const previewText =
           `Title chat ${chatTitle}\n` +
           `Messages:\n${messages.map(m => `${m.sender}: ${m.text}`).join('\n')}\n` +
-          `Response to be send: ${reply}`;
+          `Response to be send: ${replies.join('\n')}`;
 
         Overlay.show(previewText);
 
@@ -505,7 +524,12 @@ const UNREAD_DOT_SELECTOR =
         // Si el usuario no canceló, enviar la respuesta
         if (isCycling) {
           Overlay.update('Enviando respuesta...');
-          await Messenger.sendMessage(reply);
+          for (const msg of replies) {
+            await Messenger.sendMessage(msg);
+            if (msg !== replies[replies.length - 1]) {
+              await pause(3000, 'Waiting', []);
+            }
+          }
         } else {
           log('Envío cancelado por el usuario');
         }
@@ -513,7 +537,7 @@ const UNREAD_DOT_SELECTOR =
         Overlay.hide();
 
         // Espera configurable antes de pasar al siguiente chat
-        await delay(delayMs);
+        await pause(delayMs, 'Waiting between chats');
       }
     
       isCycling = false;
@@ -542,7 +566,7 @@ const UNREAD_DOT_SELECTOR =
         await this.openChatById(target.id);
 
         log('Waiting for full load', { step: 'Waiting 30s in chat', chatTitle: target.title });
-        await delay(30000);
+        await pause(30000, 'Waiting 30s in chat', [target.title]);
 
         log('Capturing messages', { step: 'Capturing messages', chatTitle: target.title });
 
@@ -561,7 +585,7 @@ const UNREAD_DOT_SELECTOR =
           messages
         });
 
-        log('API response received', { step: 'API response', reply: response.reply, chatTitle, state: 'success' });
+        log('API response received', { step: 'API response', replies: response.replies, chatTitle, state: 'success' });
 
         return { processed: true, chatTitle, response };
       } catch (err) {
@@ -581,8 +605,7 @@ const UNREAD_DOT_SELECTOR =
         const unread = chats.filter(c => c.unread).slice(-chatLimit).reverse();
         log('Unread chats', { step: 'Chats scanned', chatList: unread });
         if (!unread.length) {
-          Overlay.updateStep('No unread chats');
-          await pause(2000);
+          await pause(2000, 'No unread chats');
           Overlay.hide();
           return;
         }
@@ -591,23 +614,26 @@ const UNREAD_DOT_SELECTOR =
           Overlay.updateStep('Opening chat', [chat.title]);
           log('Opening chat', { chat });
           await this.openChatById(chat.id);
-          Overlay.updateStep('Waiting 30s in chat', [chat.title]);
-          await pause(30000);
+          await pause(30000, 'Waiting 30s in chat', [chat.title]);
           if (!isCycling) break;
           const chatTitle = Messenger.extractChatTitle();
           const messages = await Messenger.extractLastMessages(msgLimit);
           const [clientName = chatTitle, listing = chatTitle] = chatTitle.split('·').map(s => s.trim());
-          Overlay.updateStep('Waiting before API', []);
-          await pause(30000);
+          await pause(30000, 'Waiting before API');
           if (!isCycling) break;
           Overlay.updateStep('Sending to API', [chatTitle]);
-          const { reply } = await ApiClient.sendChat({ chatId: chat.id, clientName, listing, chatName: chatTitle, messages });
-          Overlay.updateStep('API Response', [reply]);
-          await pause(30000);
+          const { replies } = await ApiClient.sendChat({ chatId: chat.id, clientName, listing, chatName: chatTitle, messages });
+          await pause(30000, 'API Response', [replies.join('\n')]);
           if (!isCycling) break;
-          Overlay.updateStep('Sending reply', [reply]);
-          await Messenger.sendMessage(reply);
-          await pause(1000);
+          for (const msg of replies) {
+            Overlay.updateStep('Sending reply', [msg]);
+            await Messenger.sendMessage(msg);
+            if (msg !== replies[replies.length - 1]) {
+              await pause(3000, 'Waiting', []);
+            } else {
+              await pause(1000, 'Waiting', []);
+            }
+          }
         }
         Overlay.update('Completado');
         setTimeout(() => Overlay.hide(), 1000);
