@@ -88,7 +88,12 @@ const UNREAD_DOT_SELECTOR =
     viewPost         : /ver publicación/i,
     sentLabel        : /message sent/i,
     justSent         : /^enviado$/i,
-    youSent          : /enviaste/i
+    youSent          : /enviaste/i,
+    suggested_response1: /Sí. ¿Te interesa?/i,
+    suggested_response2: /Lo estoy mirando. Te avisaré./i,
+    suggested_response3: /Lo siento, no está disponible./i,
+    suggested_response4: /Envía una respuesta rápida./i,
+    suggested_response5: /Toca una respuesta para enviársela al comprador./i
   };
 
   // Internal state ------------------------------------------------------------
@@ -321,6 +326,11 @@ const UNREAD_DOT_SELECTOR =
         if (REGEX.awaitingResponse.test(t)) return false;
         if (REGEX.viewPost.test(t)) return false;
         if (REGEX.sentLabel.test(t)) return false;
+        if (REGEX.suggested_response1.test(t)) return false;
+        if (REGEX.suggested_response2.test(t)) return false;
+        if (REGEX.suggested_response3.test(t)) return false;
+        if (REGEX.suggested_response4.test(t)) return false;
+        if (REGEX.suggested_response5.test(t)) return false;
         return true;
       });
 
@@ -338,7 +348,7 @@ const UNREAD_DOT_SELECTOR =
      * @returns {Promise<{ reply: string } | null>}
      */
     async sendChat(chatData) {
-      const webhookUrl = 'https://n8nimpulsa.zapto.org/webhook-test/752e0505-3c13-4034-9bfd-3a870240c3cd';
+      const webhookUrl = 'https://n8nimpulsa.zapto.org/webhook/752e0505-3c13-4034-9bfd-3a870240c3cd';
       
       try {
         log('Sending chat data to webhook', { webhookUrl, chatData });
