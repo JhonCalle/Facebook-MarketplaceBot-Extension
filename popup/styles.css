@@ -243,3 +243,6 @@ h1 {
 #reloadScriptButton:hover {
   background-color: #ffd54f;
 }
+
+.main-button { display:block;width:80%;margin:40px auto;padding:12px 20px;background:#1877f2;color:#fff;font-size:16px;border:none;border-radius:8px;cursor:pointer;}
+

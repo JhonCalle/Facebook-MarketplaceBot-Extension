@@ -154,7 +154,12 @@ const UNREAD_DOT_SELECTOR =
     // Update the text shown on the overlay
     update(text) {
       if (!this.el) this.ensure();
-      this.msg.textContent = text;
+      this.msg.innerHTML = text;
+    },
+    updateStep(step, lines = []) {
+      const html = [`<div style="font-size:22px;margin-bottom:12px;">${step}</div>`]
+        .concat(lines.map(l => `<div style="margin:4px 0;">${l}</div>`)).join('<hr style="width:60%;border-color:#fff3;">');
+      this.update(html);
     },
     // Remove the overlay from the page
     hide() {
@@ -190,6 +195,12 @@ const UNREAD_DOT_SELECTOR =
 
   function delay(ms) {
     return new Promise(r => setTimeout(r, ms));
+  }
+
+  async function pause(ms) {
+    for (let t = 0; t < ms && isCycling; t += 500) {
+      await delay(500);
+    }
   }
 
   // ────────────────────────────────────────────────────────────────────────────
@@ -560,6 +571,52 @@ const UNREAD_DOT_SELECTOR =
         isProcessingUnread = false;
       }
     }
+
+    async processUnreadChats(chatLimit = 20, msgLimit = 20) {
+      if (isCycling) { log('processUnreadChats already running'); return; }
+      isCycling = true;
+      try {
+        Overlay.show('Scanning chats...');
+        const chats = await this.scanTopChats(20);
+        const unread = chats.filter(c => c.unread).slice(-chatLimit).reverse();
+        log('Unread chats', { step: 'Chats scanned', chatList: unread });
+        if (!unread.length) {
+          Overlay.updateStep('No unread chats');
+          await pause(2000);
+          Overlay.hide();
+          return;
+        }
+        for (const chat of unread) {
+          if (!isCycling) break;
+          Overlay.updateStep('Opening chat', [chat.title]);
+          log('Opening chat', { chat });
+          await this.openChatById(chat.id);
+          Overlay.updateStep('Waiting 30s in chat', [chat.title]);
+          await pause(30000);
+          if (!isCycling) break;
+          const chatTitle = Messenger.extractChatTitle();
+          const messages = await Messenger.extractLastMessages(msgLimit);
+          const [clientName = chatTitle, listing = chatTitle] = chatTitle.split('·').map(s => s.trim());
+          Overlay.updateStep('Waiting before API', []);
+          await pause(30000);
+          if (!isCycling) break;
+          Overlay.updateStep('Sending to API', [chatTitle]);
+          const { reply } = await ApiClient.sendChat({ chatId: chat.id, clientName, listing, chatName: chatTitle, messages });
+          Overlay.updateStep('API Response', [reply]);
+          await pause(30000);
+          if (!isCycling) break;
+          Overlay.updateStep('Sending reply', [reply]);
+          await Messenger.sendMessage(reply);
+          await pause(1000);
+        }
+        Overlay.update('Completado');
+        setTimeout(() => Overlay.hide(), 1000);
+      } catch (err) {
+        log('Error processing unread chats', { step: 'Error', state: 'error', message: err.message });
+      } finally {
+        isCycling = false;
+      }
+    }
   };
 
   // Detect chats marked as unread in the Marketplace interface
@@ -681,9 +738,7 @@ const UNREAD_DOT_SELECTOR =
       if (req.action === MSG.START_BOT) {
         if (isCycling) { sendResponse({ started: false, reason: 'already_running' }); return; }
         const limit = req.chatLimit || CONFIG.DEFAULT_CHAT_LIMIT;
-        Overlay.show('Preparando...');
-        ChatScanner.collectChatsData(limit, CONFIG.DEFAULT_MSG_LIMIT, CONFIG.DEFAULT_DELAY_MS)
-          .then(() => { Overlay.update('Completado'); setTimeout(() => Overlay.hide(), 1000); });
+        ChatScanner.processUnreadChats(limit, CONFIG.DEFAULT_MSG_LIMIT);
         sendResponse({ started: true });
       } else if (req.action === MSG.STOP_BOT) {
         isCycling = false;
