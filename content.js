@@ -53,6 +53,14 @@
     topChatLinks    : 'a[role="link"][href*="/t/"]'
   };
 
+/**
+ * Selector that matches the *blue‑dot wrapper* of unread chats.
+ * We search for a <span data-visualcompletion="ignore"> nested within a
+ * <div role="button" aria-hidden="true">.
+ */
+const UNREAD_DOT_SELECTOR =
+  'div[role="button"][aria-hidden="true"] span[data-visualcompletion="ignore"]';
+
   // Simple storage helper used throughout the script
   const Storage = {
     /**
@@ -361,30 +369,47 @@
     }
   };
 
+  function isUnreadChatRow(rowEl) {
+    if (!rowEl) return false;
+    // ✓ Dot present? (robust in current DOM build)
+    if (rowEl.querySelector(UNREAD_DOT_SELECTOR)) return true;
+  
+    // Fallback: aria‑label heuristic (covers unexpected lang/DOM variations)
+    const aria = (rowEl.getAttribute('aria-label') || '').trim().toLowerCase();
+    return aria.endsWith('unread') || aria.endsWith('sin leer');
+  }
+
   // ────────────────────────────────────────────────────────────────────────────
   // ChatScanner – high‑level orchestration of chat traversal
   // ────────────────────────────────────────────────────────────────────────────
   const ChatScanner = {
-    async scanTopChats(baseFetch = 20) {
-      // Constrain search to Marketplace navigation if present
-      const container = (() => {
-        const spanMarketplace = Array.from(document.querySelectorAll('span[dir="auto"]'))
-          .find(el => el.textContent.trim() === 'Marketplace');
-        const nav = spanMarketplace?.closest('div[role="navigation"]');
-        return nav || document;
-      })();
+    /**
+   * Scan sidebar for top chats (default: 10) and report id/title/unread.
+   *
+   * @param {number} baseFetch – Max chats to extract.
+   * @returns {{id:string,title:string,unread:boolean}[]} Array of metadata.
+   */
+  async scanTopChats(baseFetch = 10) {
+    // 1️⃣ Restrict to the Marketplace nav section when available
+    const container = (() => {
+      const spanMarketplace = Array.from(document.querySelectorAll('span[dir="auto"]'))
+        .find(el => el.textContent.trim() === 'Marketplace');
+      const nav = spanMarketplace?.closest('div[role="navigation"]');
+      return nav || document;
+    })();
 
-      return Array.from(container.querySelectorAll(SELECTORS.topChatLinks))
-        .slice(0, baseFetch)            // ← ALWAYS grab up to 20 IDs
-        .map(link => {
-          const title = link.getAttribute('aria-label')?.trim() || link.textContent.trim();
-          const id = (link.href.match(/\/t\/([^\/?#]+)/) || [])[1];
-          const row = link.closest('[role="row"], li');
-          const unread = !!row?.querySelector('[aria-label*="unread" i], [aria-label*="nuevo" i], [aria-label*="new message" i]');
-          return { id, title, unread };
-        })
-        .filter(c => c.id);
-    },
+    // 2️⃣ Extract chat links and map to objects
+    return Array.from(container.querySelectorAll(SELECTORS.topChatLinks))
+      .slice(0, baseFetch)
+      .map(link => {
+        const title = link.getAttribute('aria-label')?.trim() || link.textContent.trim();
+        const id = (link.href.match(/\/t\/([^\/?#]+)/) || [])[1];
+        const row = link.closest('[role="row"], li');
+        const unread = isUnreadChatRow(row);
+        return { id, title, unread };
+      })
+      .filter(c => c.id);
+  },
     
 
     async openChatById(id) {
