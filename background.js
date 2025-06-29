@@ -105,15 +105,14 @@ function loadState() {
 let messageCheckInterval;
 
 function startMessageChecker() {
-  // Check for new messages every 30 seconds
+  // Process unread chats every 30 seconds
   messageCheckInterval = setInterval(() => {
     chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
       if (tabs[0] && (tabs[0].url.includes('facebook.com/messages') || tabs[0].url.includes('messenger.com/marketplace'))) {
-        // Send message to content script to check for new messages
-        chrome.tabs.sendMessage(tabs[0].id, { action: 'checkForNewMessages' }, (res) => {
+        chrome.tabs.sendMessage(tabs[0].id, { action: 'processOldestUnread' }, (res) => {
           if (chrome.runtime.lastError) return;
-          if (res && Array.isArray(res.unread) && res.unread.length) {
-            debugLog('Unread messages:', res.unread);
+          if (res && res.processed) {
+            debugLog('Processed unread chat:', res.chatTitle);
           }
         });
       }

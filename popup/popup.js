@@ -8,6 +8,9 @@ function addLogEntry(entry) {
   div.className = 'log-entry';
   div.textContent = entry;
   logList.prepend(div);
+  while (logList.children.length > 10) {
+    logList.removeChild(logList.lastChild);
+  }
 }
 
 function debugLog(message, data) {
@@ -23,6 +26,12 @@ document.addEventListener('DOMContentLoaded', () => {
   const statusText        = document.getElementById('statusText');
   const lastChecked       = document.getElementById('lastChecked');
   const messagesProcessed = document.getElementById('messagesProcessed');
+  const stepEl            = document.getElementById('currentStep');
+  const titleEl           = document.getElementById('chatTitle');
+  const clientEl          = document.getElementById('clientName');
+  const chatListEl        = document.getElementById('chatList');
+  const apiStatusEl       = document.getElementById('apiStatus');
+  const apiRespEl         = document.getElementById('apiResponse');
   const scanLimitInput    = document.getElementById('scanLimitInput');
   const saveScanLimitBtn  = document.getElementById('saveScanLimitBtn');
 
@@ -110,6 +119,34 @@ document.addEventListener('DOMContentLoaded', () => {
         messagesProcessed.textContent = messageCount;
         chrome.storage.local.set({ messageCount });
         debugLog(`Responded to message in "${request.chatTitle || 'Unknown'}"`);
+      }
+    } else if (request.action === 'logToPopup') {
+      if (request.message) debugLog(request.message, request.data);
+      const data = request.data || {};
+      if (data.step && stepEl) {
+        stepEl.textContent = data.step;
+        stepEl.className = `state ${data.state || 'waiting'}`;
+      }
+      if (data.chatTitle && titleEl) {
+        titleEl.textContent = data.chatTitle;
+      }
+      if (data.clientName && clientEl) {
+        clientEl.textContent = data.clientName;
+      }
+      if (Array.isArray(data.chatList) && chatListEl) {
+        chatListEl.innerHTML = '';
+        data.chatList.forEach(c => {
+          const li = document.createElement('li');
+          li.textContent = c.title;
+          if (c.unread) li.classList.add('unread');
+          chatListEl.appendChild(li);
+        });
+      }
+      if (data.apiStatus && apiStatusEl) {
+        apiStatusEl.textContent = data.apiStatus;
+      }
+      if (data.reply && apiRespEl) {
+        apiRespEl.textContent = data.reply;
       }
     }
   });
