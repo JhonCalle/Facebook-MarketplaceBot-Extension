@@ -33,6 +33,7 @@
     START_BOT:         'startBot',
     STOP_BOT:          'stopBot',
     CHECK_NEW:         'checkForNewMessages',
+    PROCESS_UNREAD:    'processOldestUnread',
     LOG:               'log'
   };
 
@@ -92,6 +93,7 @@ const UNREAD_DOT_SELECTOR =
 
   // Internal state ------------------------------------------------------------
   let isCycling = false;
+  let isProcessingUnread = false;
 
   // ────────────────────────────────────────────────────────────────────────────
   // Overlay manager (UX feedback while bot runs)
@@ -122,9 +124,10 @@ const UNREAD_DOT_SELECTOR =
 
       const btn = document.createElement('button');
       btn.textContent = 'DETENER';
-      btn.style.cssText = 'padding:8px 16px;font-size:16px;background:#dc3545;color:#fff;border:none;border-radius:4px;cursor:pointer;';
+      btn.style.cssText = 'padding:12px 24px;font-size:20px;background:#dc3545;color:#fff;border:none;border-radius:6px;cursor:pointer;';
       btn.addEventListener('click', () => {
         isCycling = false;
+        isProcessingUnread = false;
         this.update('Detenido por usuario');
         const composer = document.querySelector(SELECTORS.composer);
         if (composer) {
@@ -496,10 +499,59 @@ const UNREAD_DOT_SELECTOR =
       isCycling = false;
       Overlay.update('Completado');
       setTimeout(() => Overlay.hide(), 1000);
-  log('Detailed scan completed', results);
-  return results;
-}
-};
+      log('Detailed scan completed', results);
+      return results;
+    },
+
+    async processOldestUnreadChat(msgLimit) {
+      if (isProcessingUnread) return { status: 'busy' };
+      isProcessingUnread = true;
+
+      try {
+        log('Scanning top chats', { step: 'Scanning chats...' });
+        const chats = await this.scanTopChats(20);
+        log('Chats scanned', { step: 'Chats scanned', chatList: chats });
+        const unread = chats.filter(c => c.unread);
+        if (!unread.length) {
+          log('No unread chats found', { step: 'No unread chats found', state: 'success' });
+          return { processed: false };
+        }
+
+        const target = unread[unread.length - 1];
+        log('Opening unread chat', { step: 'Opening chat', chatTitle: target.title });
+        await this.openChatById(target.id);
+
+        log('Waiting for full load', { step: 'Waiting 30s in chat', chatTitle: target.title });
+        await delay(30000);
+
+        log('Capturing messages', { step: 'Capturing messages', chatTitle: target.title });
+
+        const chatTitle = Messenger.extractChatTitle();
+        const messages  = await Messenger.extractLastMessages(msgLimit);
+        const [clientName = chatTitle, listing = chatTitle] = chatTitle
+          .split('·')
+          .map(s => s.trim());
+
+        log('Sending data to API', { step: 'Sending to API', chatTitle, clientName });
+        const response = await ApiClient.sendChat({
+          chatId: target.id,
+          clientName,
+          listing,
+          chatName: chatTitle,
+          messages
+        });
+
+        log('API response received', { step: 'API response', reply: response.reply, chatTitle, state: 'success' });
+
+        return { processed: true, chatTitle, response };
+      } catch (err) {
+        log('Error processing unread chat', { step: 'Error', state: 'error', message: err.message });
+        return { processed: false, error: err.message };
+      } finally {
+        isProcessingUnread = false;
+      }
+    }
+  };
 
   // Detect chats marked as unread in the Marketplace interface
   function checkForNewMessages() {
@@ -561,6 +613,13 @@ const UNREAD_DOT_SELECTOR =
           const msgLimit = await Storage.getNumber('scanLimit', CONFIG.DEFAULT_MSG_LIMIT);
           const data = await ChatScanner.collectChatsData(CONFIG.DEFAULT_CHAT_LIMIT, msgLimit, CONFIG.DEFAULT_DELAY_MS);
           sendResponse({ chatsData: data });
+          break;
+        }
+
+        case MSG.PROCESS_UNREAD: {
+          const msgLimit = await Storage.getNumber('scanLimit', CONFIG.DEFAULT_MSG_LIMIT);
+          const res = await ChatScanner.processOldestUnreadChat(msgLimit);
+          sendResponse(res);
           break;
         }
 
