@@ -359,7 +359,7 @@ const UNREAD_DOT_SELECTOR =
      * @returns {Promise<{ reply: string } | null>}
      */
     async sendChat(chatData) {
-      const webhookUrl = 'https://n8nimpulsa.zapto.org/webhook/752e0505-3c13-4034-9bfd-3a870240c3cd';
+      const webhookUrl = 'https://n8nimpulsa.zapto.org/webhook/ImpulsaAIbot';
       
       try {
         log('Sending chat data to webhook', { webhookUrl, chatData });
@@ -570,7 +570,7 @@ const UNREAD_DOT_SELECTOR =
       } finally {
         isProcessingUnread = false;
       }
-    }
+    },
 
     async processUnreadChats(chatLimit = 20, msgLimit = 20) {
       if (isCycling) { log('processUnreadChats already running'); return; }
