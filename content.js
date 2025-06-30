@@ -87,6 +87,7 @@ const UNREAD_DOT_SELECTOR =
     awaitingResponse : /está esperando tu respuesta/i,
     viewPost         : /ver publicación/i,
     sentLabel        : /message sent/i,
+    sentLabel2       : /Mensaje enviado/i,
     justSent         : /^enviado$/i,
     youSent          : /enviaste/i,
     suggested_response1: /Sí. ¿Te interesa?/i,
@@ -335,20 +336,21 @@ const UNREAD_DOT_SELECTOR =
       if (markerIdx >= 0) messages.splice(0, markerIdx + 1);
 
       // Buyer name (first word of chat title) for filtering
-      const buyerName = Messenger.extractChatTitle().split(/[\s·-]/)[0]?.toLowerCase() || '';
+      const clientName = Messenger.extractChatTitle().split('·')[0]?.toLowerCase() || '';
 
       const filtered = messages.filter(m => {
         const t = m.text.toLowerCase();
         if (!t) return false;
         if (t === 'enter') return false;
         if (REGEX.justSent.test(t)) return false;
-        if (t === buyerName) return false;
+        if (t === clientName) return false;
         if (REGEX.timeOnly.test(t)) return false;
         if (REGEX.dateTimeText.test(t) || REGEX.numericDateTime.test(t)) return false;
         if (REGEX.relativeTime.test(t)) return false;
         if (REGEX.awaitingResponse.test(t)) return false;
         if (REGEX.viewPost.test(t)) return false;
         if (REGEX.sentLabel.test(t)) return false;
+        if (REGEX.sentLabel2.test(t)) return false;
         if (REGEX.suggested_response1.test(t)) return false;
         if (REGEX.suggested_response2.test(t)) return false;
         if (REGEX.suggested_response3.test(t)) return false;
