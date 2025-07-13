@@ -30,4 +30,15 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     window.close();
   });
+
+  // Add Stop Bot button functionality
+  const stopBtn = document.getElementById('stopBotButton');
+  stopBtn?.addEventListener('click', async () => {
+    const ready = await ensureContentScript();
+    if (!ready) return;
+    chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
+      chrome.tabs.sendMessage(tabs[0].id, { action: 'stopBot' });
+    });
+    window.close();
+  });
 });

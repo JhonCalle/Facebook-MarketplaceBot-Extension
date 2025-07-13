@@ -42,7 +42,15 @@
     DEFAULT_MSG_LIMIT    : 10,
     DEFAULT_DELAY_MS     : 1500,
     WAIT_FOR_ELEMENT_MS  : 5000,
-    WAIT_FOR_INTERVAL_MS : 100
+    WAIT_FOR_INTERVAL_MS : 100,
+    WAIT: {
+      inChat: 1000,         // Wait after opening chat
+      beforeAPI: 1000,      // Wait before sending to API
+      afterAPI: 15000,       // Wait after API response
+      betweenReplies: 3000,  // Wait between sending replies
+      afterLastReply: 1000,  // Wait after last reply
+      noUnread: 2000         // Wait if no unread chats
+    }
   };
 
   const SELECTORS = {
@@ -607,7 +615,7 @@ const UNREAD_DOT_SELECTOR =
         const unread = chats.filter(c => c.unread).slice(-chatLimit).reverse();
         log('Unread chats', { step: 'Chats scanned', chatList: unread });
         if (!unread.length) {
-          await pause(2000, 'No unread chats');
+          await pause(CONFIG.WAIT.noUnread, 'No unread chats');
           Overlay.hide();
           return;
         }
@@ -616,24 +624,24 @@ const UNREAD_DOT_SELECTOR =
           Overlay.updateStep('Opening chat', [chat.title]);
           log('Opening chat', { chat });
           await this.openChatById(chat.id);
-          await pause(30000, 'Waiting 30s in chat', [chat.title]);
+          await pause(CONFIG.WAIT.inChat, 'Waiting in chat', [chat.title]);
           if (!isCycling) break;
           const chatTitle = Messenger.extractChatTitle();
           const messages = await Messenger.extractLastMessages(msgLimit);
           const [clientName = chatTitle, listing = chatTitle] = chatTitle.split('·').map(s => s.trim());
-          await pause(30000, 'Waiting before API');
+          await pause(CONFIG.WAIT.beforeAPI, 'Waiting before API');
           if (!isCycling) break;
           Overlay.updateStep('Sending to API', [chatTitle]);
           const { replies } = await ApiClient.sendChat({ chatId: chat.id, clientName, listing, chatName: chatTitle, messages });
-          await pause(30000, 'API Response', [replies.join('\n')]);
+          await pause(CONFIG.WAIT.afterAPI, 'API Response', [replies.join('\n')]);
           if (!isCycling) break;
           for (const msg of replies) {
             Overlay.updateStep('Sending reply', [msg]);
             await Messenger.sendMessage(msg);
             if (msg !== replies[replies.length - 1]) {
-              await pause(3000, 'Waiting', []);
+              await pause(CONFIG.WAIT.betweenReplies, 'Waiting', []);
             } else {
-              await pause(1000, 'Waiting', []);
+              await pause(CONFIG.WAIT.afterLastReply, 'Waiting', []);
             }
           }
         }
