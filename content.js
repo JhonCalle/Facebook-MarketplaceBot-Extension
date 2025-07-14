@@ -38,7 +38,7 @@
   };
 
   const CONFIG = {
-    DEFAULT_CHAT_LIMIT   : 5,
+    DEFAULT_CHAT_LIMIT   : 20,
     DEFAULT_MSG_LIMIT    : 10,
     DEFAULT_DELAY_MS     : 1500,
     WAIT_FOR_ELEMENT_MS  : 5000,
@@ -485,7 +485,7 @@ const UNREAD_DOT_SELECTOR =
       isCycling = true;
     
       // Siempre obtenemos 20 IDs pero solo procesamos hasta "chatLimit"
-      const allChats      = await this.scanTopChats(20);
+      const allChats      = await this.scanTopChats(30);
       const stopCount     = Math.min(chatLimit, allChats.length);
       const chatsToHandle = allChats.slice(0, stopCount);
       const results       = [];

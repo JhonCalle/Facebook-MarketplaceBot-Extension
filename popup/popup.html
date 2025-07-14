@@ -4,15 +4,104 @@
   <meta charset="UTF-8">
   <title>Marketplace Auto-Responder</title>
   <link rel="stylesheet" href="styles.css">
+  <style>
+    body {
+      background: #f6f8fa;
+      font-family: 'Segoe UI', Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      min-width: 320px;
+      min-height: 260px;
+    }
+    .container {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+      margin: 24px auto;
+      padding: 28px 24px 20px 24px;
+      max-width: 340px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .logo {
+      width: 48px;
+      height: 48px;
+      margin-bottom: 10px;
+    }
+    h1 {
+      font-size: 1.35rem;
+      font-weight: 600;
+      margin: 0 0 10px 0;
+      color: #222;
+      letter-spacing: 0.01em;
+    }
+    .desc {
+      color: #555;
+      font-size: 1rem;
+      margin-bottom: 18px;
+      text-align: center;
+    }
+    .main-button {
+      width: 100%;
+      padding: 12px 0;
+      margin: 0 0 10px 0;
+      border: none;
+      border-radius: 6px;
+      background: linear-gradient(90deg, #4f8cff 0%, #38c6ff 100%);
+      color: #fff;
+      font-size: 1.08rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+      box-shadow: 0 1px 4px rgba(80,120,255,0.08);
+    }
+    .main-button:active {
+      background: linear-gradient(90deg, #3576e6 0%, #1fa6e6 100%);
+    }
+    .main-button[disabled] {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    .status {
+      margin-top: 10px;
+      min-height: 28px;
+      color: #2d7a2d;
+      font-size: 0.98rem;
+      text-align: center;
+      word-break: break-word;
+      transition: color 0.2s;
+    }
+    .status.error {
+      color: #c0392b;
+    }
+    .footer {
+      margin-top: 18px;
+      font-size: 0.92rem;
+      color: #888;
+      text-align: center;
+    }
+    .footer a {
+      color: #4f8cff;
+      text-decoration: none;
+    }
+    .footer a:hover {
+      text-decoration: underline;
+    }
+  </style>
 </head>
 <body>
-  <div class="container simple">
+  <div class="container">
+    <img src="../assets/icon48.png" class="logo" alt="Bot Logo" />
     <h1>Marketplace Bot</h1>
-
-    <button id="startBotButton" class="main-button">Start Bot</button>
-    <button id="stopBotButton" class="main-button" style="margin-top:10px;">Stop Bot</button>
+    <div class="desc">Automate your Facebook Marketplace replies.<br>Start or stop the bot below.</div>
+    <button id="startBotButton" class="main-button">▶ Start Bot</button>
+    <button id="stopBotButton" class="main-button">■ Stop Bot</button>
+    <div id="status" class="status"></div>
+    <div class="footer">
+      <span>Need help? <a href="https://github.com/JhonCalle/Facebook-MarketplaceBot-Extension" target="_blank">Docs</a></span>
+    </div>
   </div>
-
   <script src="popup.js"></script>
 </body>
 </html>
