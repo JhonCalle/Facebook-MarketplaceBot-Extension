@@ -193,195 +193,88 @@ const UNREAD_DOT_SELECTOR =
     chrome.runtime.sendMessage({ action: MSG.LOG, message, data });
   }
 
-  // imageSenderEnhanced.js – drop‑in module to reliably attach & send images in Messenger
-// -----------------------------------------------------------------------------------
-// USAGE
-// 1. Import the helpers into content.js and replace the old Messenger.sendImage* calls with
-//    `await ImageSender.sendImage(blob, { preferred: 'auto' /* or 'fileInput' | 'clipboard' | 'dragDrop' */ })`.
-// 2. Make sure your manifest has "clipboardWrite" permission *and* ""clipboardRead" if you
-//    want to reuse the clipboard method.
-// 3. Keep background.js unchanged – it still provides the blob through fetchImage.
-// -----------------------------------------------------------------------------------
+  // ---------------------------------------------------------------
+  // ImageSender – attach and send images using the file input only
+  // ---------------------------------------------------------------
 
-const ImageSender = (() => {
-  const SELECTORS = {
-    composer : '[contenteditable="true"][role="textbox"]',
-    // Messenger usually shows this input after clicking the 📎 (+) button
-    hiddenFileInput : 'input[type="file"][multiple]',
-    // The plus / clip icon that opens the native file input dialog
-    addFilesButton : 'div[role="button"][aria-label*="archivo" i], div[role="button"][aria-label*="file" i]',
-    // The mini preview bubble that appears once an image is attached
-    uploadPreview  : 'img[src^="blob:"]',
-  };
+  const ImageSender = (() => {
+    const SELECTORS = {
+      composer: '[contenteditable="true"][role="textbox"]',
+      addFilesButton: 'div[role="button"][aria-label*="archivo" i], div[role="button"][aria-label*="file" i]',
+      hiddenFileInput: 'input[type="file"][multiple]',
+      uploadPreview: 'img[src^="blob:"]'
+    };
 
-  // Small convenience helpers ------------------------------------------------
-  async function delay(ms){ return new Promise(r => setTimeout(r, ms)); }
-  function waitFor(fn, ms = 50, timeout = 4000){
-    return new Promise(resolve => {
-      const end = Date.now() + timeout;
-      (function loop(){
-        if (fn()) return resolve(true);
-        if (Date.now() > end) return resolve(false);
-        setTimeout(loop, ms);
-      })();
-    });
-  }
-  function focusComposer(){
-    const el = document.querySelector(SELECTORS.composer);
-    if (el) el.focus();
-    return el;
-  }
-  function pressEnter(){
-    const composer = focusComposer();
-    if (!composer) return false;
-    const kd = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
-    const ku = new KeyboardEvent('keyup',   { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
-    composer.dispatchEvent(kd); composer.dispatchEvent(ku);
-    return true;
-  }
+    async function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-  // STRATEGY 1 – hidden <input type="file"> ----------------------------------
-  async function viaFileInput(blob){
-    log('[ImageSender] viaFileInput called with blob:', blob);
-    // 1) Try to reveal the hidden input (click the clip/plus icon)
-    const button = document.querySelector(SELECTORS.addFilesButton);
-    if (button){
-      log('[ImageSender] Clicking addFilesButton');
-      button.click();
-      await delay(150);
+    function focusComposer() {
+      const el = document.querySelector(SELECTORS.composer);
+      if (el) el.focus();
+      return el;
     }
 
-    const input  = document.querySelector(SELECTORS.hiddenFileInput);
-    if (!input) {
-      log('[ImageSender] hiddenFileInput not found');
-      return false;
+    function pressEnter() {
+      const composer = focusComposer();
+      if (!composer) return false;
+      const kd = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
+      const ku = new KeyboardEvent('keyup',   { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
+      composer.dispatchEvent(kd);
+      composer.dispatchEvent(ku);
+      return true;
     }
 
-    const file = new File([blob], `image.${blob.type.split('/')[1]}`, { type: blob.type });
-    const dt   = new DataTransfer();
-    dt.items.add(file);
-    input.files = dt.files;
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-    log('[ImageSender] Dispatched change event on hiddenFileInput');
-
-    // Wait for the inline preview bubble, then press Enter
-    const previewFound = await waitFor(() => document.querySelector(SELECTORS.uploadPreview));
-    if (!previewFound) {
-      log('[ImageSender] uploadPreview not found');
-      return false;
-    }
-    await delay(200); // short buffer
-    pressEnter();
-    log('[ImageSender] Pressed Enter after file input');
-    return true;
-  }
-
-  // STRATEGY 2 – Clipboard API -------------------------------------------------
-  async function viaClipboard(blob){
-    log('[ImageSender] viaClipboard called with blob:', blob);
-    try {
-      await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
-      log('[ImageSender] Wrote blob to clipboard');
-    } catch (err){
-      console.warn('[ImageSender] clipboard.write failed', err);
-      log('[ImageSender] clipboard.write failed', err);
-      return false;
-    }
-    const composer = focusComposer();
-    if (!composer) {
-      log('[ImageSender] composer not found');
-      return false;
+    async function waitFor(fn, ms = 50, timeout = 4000) {
+      return new Promise(resolve => {
+        const end = Date.now() + timeout;
+        (function loop() {
+          if (fn()) return resolve(true);
+          if (Date.now() > end) return resolve(false);
+          setTimeout(loop, ms);
+        })();
+      });
     }
 
-    const pasteEvt = new ClipboardEvent('paste', { bubbles:true, clipboardData: new DataTransfer() });
-    composer.dispatchEvent(pasteEvt);
-    log('[ImageSender] Dispatched paste event on composer');
-
-    // Messenger auto‑displays the preview inside the composer
-    const previewFound = await waitFor(() => document.querySelector(SELECTORS.uploadPreview));
-    if (!previewFound) {
-      log('[ImageSender] uploadPreview not found');
-      return false;
-    }
-    pressEnter();
-    log('[ImageSender] Pressed Enter after clipboard paste');
-    return true;
-  }
-
-  // STRATEGY 3 – Simulated drag‑and‑drop --------------------------------------
-  async function viaDragDrop(blob){
-    log('[ImageSender] viaDragDrop called with blob:', blob);
-    const composer = focusComposer();
-    if (!composer) {
-      log('[ImageSender] composer not found');
-      return false;
-    }
-
-    const file = new File([blob], `image.${blob.type.split('/')[1]}`, { type: blob.type });
-    const dt   = new DataTransfer();
-    dt.items.add(file);
-
-    const dragOver = new DragEvent('dragover', { bubbles: true, dataTransfer: dt });
-    const drop     = new DragEvent('drop',     { bubbles: true, dataTransfer: dt });
-    composer.dispatchEvent(dragOver);
-    composer.dispatchEvent(drop);
-    log('[ImageSender] Dispatched dragover and drop events on composer');
-
-    const previewFound = await waitFor(() => document.querySelector(SELECTORS.uploadPreview));
-    if (!previewFound) {
-      log('[ImageSender] uploadPreview not found');
-      return false;
-    }
-    pressEnter();
-    log('[ImageSender] Pressed Enter after drag and drop');
-    return true;
-  }
-
-  // Public facade -------------------------------------------------------------
-  /**
-   * Attempt to attach & send an image using progressively more permissive
-   * strategies. Return `true` on first success, else `false`.
-   *
-   * @param {Blob} blob
-   * @param {{preferred?: 'auto'|'fileInput'|'clipboard'|'dragDrop'}} opts
-   */
-  async function sendImage(blob, opts = {}){
-    log('[ImageSender] sendImage called with blob:', blob, 'and options:', opts);
-    const order = (() => {
-      if (opts.preferred && opts.preferred !== 'auto') return [opts.preferred];
-      // Default priority: native file input ➜ clipboard ➜ drag‑drop
-      return ['fileInput', 'clipboard', 'dragDrop'];
-    })();
-
-    for (const method of order){
-      let ok = false;
-      try {
-        log(`[ImageSender] Attempting to send via ${method}`);
-        if (method === 'fileInput')  ok = await viaFileInput(blob);
-        if (method === 'clipboard')  ok = await viaClipboard(blob);
-        if (method === 'dragDrop')   ok = await viaDragDrop(blob);
-      } catch (e){
-        console.warn(`[ImageSender] ${method} failed`, e);
-        log(`[ImageSender] ${method} failed with error:`, e);
-        ok = false;
+    async function viaFileInput(blob) {
+      log('[ImageSender] viaFileInput called with blob:', blob);
+      const button = document.querySelector(SELECTORS.addFilesButton);
+      if (button) {
+        button.click();
+        await delay(150);
       }
-      if (ok) {
-        console.log('[ImageSender] sent via', method);
-        log('[ImageSender] sent via', method);
-        return true;
+
+      const input = document.querySelector(SELECTORS.hiddenFileInput);
+      if (!input) {
+        log('[ImageSender] hiddenFileInput not found');
+        return false;
       }
-      log(`[ImageSender] ${method} failed`);
+
+      const file = new File([blob], `image.${blob.type.split('/')[1]}`, { type: blob.type });
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      input.files = dt.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      log('[ImageSender] Dispatched change event on hiddenFileInput');
+
+      const previewFound = await waitFor(() => document.querySelector(SELECTORS.uploadPreview));
+      if (!previewFound) {
+        log('[ImageSender] uploadPreview not found');
+        return false;
+      }
+      await delay(200);
+      pressEnter();
+      log('[ImageSender] Pressed Enter after file input');
+      return true;
     }
-    console.error('[ImageSender] all strategies failed');
-    log('[ImageSender] all strategies failed');
-    return false;
-  }
 
-  return { sendImage };
-})();
+    async function sendImage(blob) {
+      return viaFileInput(blob);
+    }
 
-// Expose globally for debugging
-window.ImageSender = ImageSender;
+    return { sendImage };
+  })();
+
+  window.ImageSender = ImageSender;
+
 
 
   function waitFor(conditionFn, interval = CONFIG.WAIT_FOR_INTERVAL_MS, timeout = CONFIG.WAIT_FOR_ELEMENT_MS) {
@@ -495,45 +388,6 @@ window.ImageSender = ImageSender;
       return true;
     },
 
-    async sendImageClipboard(blob) {
-      const composer = this.focusComposer();
-      if (!composer) return false;
-      try {
-        await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
-      } catch (err) {
-        log('Clipboard write failed', err);
-        return false;
-      }
-      const dt = new DataTransfer();
-      dt.items.add(new File([blob], 'image', { type: blob.type }));
-      const pasteEvt = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true });
-      composer.dispatchEvent(pasteEvt);
-      await delay(600);
-      const down = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
-      const up   = new KeyboardEvent('keyup',   { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
-      composer.dispatchEvent(down);
-      composer.dispatchEvent(up);
-      return true;
-    },
-
-    async sendImageUpload(blob) {
-      const input = document.querySelector('input[type="file"]');
-      if (!input) { log('File input not found'); return false; }
-      const file = new File([blob], 'image.' + blob.type.split('/')[1], { type: blob.type });
-      const dt = new DataTransfer();
-      dt.items.add(file);
-      input.files = dt.files;
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-      await delay(1000);
-      const composer = this.focusComposer();
-      if (composer) {
-        const down = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
-        const up   = new KeyboardEvent('keyup',   { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
-        composer.dispatchEvent(down);
-        composer.dispatchEvent(up);
-      }
-      return true;
-    },
 
     extractChatTitle() {
       const headerLink = document.querySelector(SELECTORS.headerLink);
@@ -663,6 +517,27 @@ window.ImageSender = ImageSender;
     return aria.endsWith('unread') || aria.endsWith('sin leer');
   }
 
+  function isImageReply(text) {
+    return typeof text === 'string' && (
+      /^data:image\//i.test(text.trim()) ||
+      /\.(png|jpe?g|gif|bmp|webp)(\?.*)?$/i.test(text.trim())
+    );
+  }
+
+  async function sendReplyContent(content) {
+    if (isImageReply(content)) {
+      try {
+        const dataUrl = content.startsWith('data:') ? content : await fetchImageViaBackground(content);
+        const blob = dataURLToBlob(dataUrl);
+        await ImageSender.sendImage(blob);
+      } catch (err) {
+        log('Failed to send image reply', err);
+      }
+    } else {
+      await Messenger.sendMessage(content);
+    }
+  }
+
   // ────────────────────────────────────────────────────────────────────────────
   // ChatScanner – high‑level orchestration of chat traversal
   // ────────────────────────────────────────────────────────────────────────────
@@ -767,7 +642,7 @@ window.ImageSender = ImageSender;
         if (isCycling) {
           Overlay.update('Enviando respuesta...');
           for (const msg of replies) {
-            await Messenger.sendMessage(msg);
+            await sendReplyContent(msg);
             if (msg !== replies[replies.length - 1]) {
               await pause(3000, 'Waiting', []);
             }
@@ -869,7 +744,7 @@ window.ImageSender = ImageSender;
           if (!isCycling) break;
           for (const msg of replies) {
             Overlay.updateStep('Sending reply', [msg]);
-            await Messenger.sendMessage(msg);
+            await sendReplyContent(msg);
             if (msg !== replies[replies.length - 1]) {
               await pause(CONFIG.WAIT.betweenReplies, 'Waiting', []);
             } else {
@@ -983,8 +858,7 @@ window.ImageSender = ImageSender;
             }
 
             // Use the enhanced sender
-            log('SEND_TEST_IMAGE: calling ImageSender.sendImage with method:', request.method);
-            const sent = await ImageSender.sendImage(blob, { preferred: request.method === 'upload' ? 'fileInput' : request.method === 'clipboard' ? 'clipboard' : 'auto' });
+            const sent = await ImageSender.sendImage(blob);
             log('SEND_TEST_IMAGE: sent result', sent);
 
             sendResponse({ sent });

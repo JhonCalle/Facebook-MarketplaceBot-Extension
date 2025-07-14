@@ -2,9 +2,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const startBtn = document.getElementById('startBotButton');
   const stopBtn = document.getElementById('stopBotButton');
   const statusEl = document.getElementById('status');
-  const sendImageBtn = document.getElementById('sendImageButton');
-  const imageUrlInput = document.getElementById('imageUrlInput');
-  const imageMethodSelect = document.getElementById('imageMethodSelect');
 
   function setStatus(msg, isError = false) {
     statusEl.textContent = msg || '';
@@ -70,39 +67,6 @@ document.addEventListener('DOMContentLoaded', () => {
         setStatus('Bot stopped.');
         setTimeout(() => window.close(), 900);
       });
-    });
-  });
-
-  sendImageBtn?.addEventListener('click', async () => {
-    const url = imageUrlInput.value.trim();
-    const method = imageMethodSelect.value;
-    // Accept any http(s) URL for testing
-    const valid = /^https?:\/\/.+/i.test(url);
-    if (!valid) {
-      setStatus('Enter a valid image URL.', true);
-      return;
-    }
-    sendImageBtn.disabled = true;
-    setStatus('Sending image...');
-    const ready = await ensureContentScript();
-    if (!ready) {
-      setStatus('Not a supported page. Open Facebook Messenger.', true);
-      sendImageBtn.disabled = false;
-      return;
-    }
-    chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
-      chrome.tabs.sendMessage(
-        tabs[0].id,
-        { action: 'sendTestImage', url, method },
-        res => {
-          sendImageBtn.disabled = false;
-          if (chrome.runtime.lastError || !res?.sent) {
-            setStatus('Failed to send image.', true);
-          } else {
-            setStatus('Image sent!');
-          }
-        }
-      );
     });
   });
 
