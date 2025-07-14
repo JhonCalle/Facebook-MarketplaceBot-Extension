@@ -21,6 +21,38 @@ function debugLog(message, data) {
  * Each handler returns `true` when `sendResponse` should remain open.
  */
 const messageHandlers = {
+  // Fetch image as data URL to bypass CORS for content script
+  async fetchImage(req, sendResponse) {
+    debugLog('[fetchImage] Start', req.url);
+    try {
+      debugLog('[fetchImage] Fetching URL', req.url);
+      const response = await fetch(req.url);
+      debugLog('[fetchImage] Fetch response', response);
+      if (!response.ok) {
+        debugLog('[fetchImage] Response not OK', response.status);
+        sendResponse({ success: false, error: 'HTTP error: ' + response.status });
+        return true;
+      }
+      const blob = await response.blob();
+      debugLog('[fetchImage] Blob created', blob);
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        debugLog('[fetchImage] FileReader onloadend', reader.result);
+        sendResponse({ success: true, dataUrl: reader.result });
+      };
+      reader.onerror = (err) => {
+        debugLog('[fetchImage] FileReader onerror', err);
+        sendResponse({ success: false, error: 'Failed to read image blob' });
+      };
+      debugLog('[fetchImage] Reading blob as data URL');
+      reader.readAsDataURL(blob);
+    } catch (e) {
+      debugLog('[fetchImage] Exception', e);
+      sendResponse({ success: false, error: e.message });
+    }
+    debugLog('[fetchImage] Handler end');
+    return true; // keep channel open for async sendResponse
+  },
   toggleAutoResponder(_req, sendResponse) {
     isAutoResponderActive = !isAutoResponderActive;
     chrome.storage.local.set({ autoResponderActive: isAutoResponderActive });
@@ -126,3 +158,34 @@ function stopMessageChecker() {
     messageCheckInterval = null;
   }
 }
+
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === 'fetchImage') {
+    console.log('Background script received fetchImage request', request); // ADDED
+    try {
+      fetch(request.url)
+        .then(response => {
+          console.log('Background script fetch response', response); // ADDED
+          return response.blob();
+        })
+        .then(blob => {
+          console.log('Background script got blob', blob); // ADDED
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            console.log('Background script sending dataUrl response'); // ADDED
+            sendResponse({ success: true, dataUrl: reader.result });
+          };
+          reader.readAsDataURL(blob);
+        })
+        .catch(error => {
+          console.error('Background script fetch error', error); // ADDED
+          sendResponse({ success: false, error: error.message });
+        });
+      return true; // Keep the message channel open for sendResponse
+    } catch (e) {
+      console.error('Background script error', e); // ADDED
+      sendResponse({ success: false, error: e.message });
+      return true;
+    }
+  }
+});

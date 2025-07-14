@@ -7,12 +7,14 @@
     "activeTab",
     "storage",
     "scripting",
-    "clipboardRead", "clipboardWrite"
+    "clipboardRead",
+    "clipboardWrite"
   ],
   "host_permissions": [
     "https://www.facebook.com/*",
     "https://web.facebook.com/*",
-    "https://www.messenger.com/*"
+    "https://www.messenger.com/*",
+    "https://blogger.googleusercontent.com/*"
   ],
   "action": {
     "default_popup": "popup/popup.html",
@@ -30,9 +32,8 @@
       "matches": [
         "https://www.messenger.com/marketplace/*"
       ],
-      "js": ["content.js"],
-      "run_at": "document_end",
-      "all_frames": true
+      "js": ["content.js", "imageSenderEnhanced.js"],
+      "run_at": "document_end"
     }
   ],
   "icons": {

@@ -1,4 +1,3 @@
-
 document.addEventListener('DOMContentLoaded', () => {
   const startBtn = document.getElementById('startBotButton');
   const stopBtn = document.getElementById('stopBotButton');
@@ -77,7 +76,8 @@ document.addEventListener('DOMContentLoaded', () => {
   sendImageBtn?.addEventListener('click', async () => {
     const url = imageUrlInput.value.trim();
     const method = imageMethodSelect.value;
-    const valid = /^https?:\/\/.*\.(?:png|jpe?g|gif|webp|bmp)$/i.test(url);
+    // Accept any http(s) URL for testing
+    const valid = /^https?:\/\/.+/i.test(url);
     if (!valid) {
       setStatus('Enter a valid image URL.', true);
       return;
