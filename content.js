@@ -30,6 +30,7 @@
     CYCLE_CHATS:       'cycleChats',
     SCAN_DETAILED:     'scanChatsDetailed',
     SEND_TEST_REPLY:   'sendTestReply',
+    SEND_TEST_IMAGE:   'sendTestImage',
     START_BOT:         'startBot',
     STOP_BOT:          'stopBot',
     CHECK_NEW:         'checkForNewMessages',
@@ -300,6 +301,46 @@ const UNREAD_DOT_SELECTOR =
       composer.dispatchEvent(enterDown);
       composer.dispatchEvent(enterUp);
       log('Mensaje enviado');
+      return true;
+    },
+
+    async sendImageClipboard(blob) {
+      const composer = this.focusComposer();
+      if (!composer) return false;
+      try {
+        await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
+      } catch (err) {
+        log('Clipboard write failed', err);
+        return false;
+      }
+      const dt = new DataTransfer();
+      dt.items.add(new File([blob], 'image', { type: blob.type }));
+      const pasteEvt = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true });
+      composer.dispatchEvent(pasteEvt);
+      await delay(600);
+      const down = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
+      const up   = new KeyboardEvent('keyup',   { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
+      composer.dispatchEvent(down);
+      composer.dispatchEvent(up);
+      return true;
+    },
+
+    async sendImageUpload(blob) {
+      const input = document.querySelector('input[type="file"]');
+      if (!input) { log('File input not found'); return false; }
+      const file = new File([blob], 'image.' + blob.type.split('/')[1], { type: blob.type });
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      input.files = dt.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      await delay(1000);
+      const composer = this.focusComposer();
+      if (composer) {
+        const down = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
+        const up   = new KeyboardEvent('keyup',   { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
+        composer.dispatchEvent(down);
+        composer.dispatchEvent(up);
+      }
       return true;
     },
 
@@ -729,6 +770,21 @@ const UNREAD_DOT_SELECTOR =
           const testMessage = request.testMessage || 'respuesta de prueba';
           sendResponse({ sent: await Messenger.sendMessage(testMessage) });
           return true; // Keep the message channel open for async response
+        }
+
+        case MSG.SEND_TEST_IMAGE: {
+          try {
+            const resp = await fetch(request.url);
+            const blob = await resp.blob();
+            const sent = request.method === 'upload'
+              ? await Messenger.sendImageUpload(blob)
+              : await Messenger.sendImageClipboard(blob);
+            sendResponse({ sent });
+          } catch (e) {
+            log('Error sending image', e);
+            sendResponse({ sent: false });
+          }
+          return true;
         }
 
         default:

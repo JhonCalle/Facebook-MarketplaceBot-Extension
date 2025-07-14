@@ -63,6 +63,25 @@
       opacity: 0.6;
       cursor: not-allowed;
     }
+    .image-test {
+      width: 100%;
+      margin: 10px 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    #imageUrlInput {
+      width: 100%;
+      padding: 6px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+    }
+    #imageMethodSelect {
+      width: 100%;
+      padding: 6px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+    }
     .status {
       margin-top: 10px;
       min-height: 28px;
@@ -97,6 +116,14 @@
     <div class="desc">Automate your Facebook Marketplace replies.<br>Start or stop the bot below.</div>
     <button id="startBotButton" class="main-button">▶ Start Bot</button>
     <button id="stopBotButton" class="main-button">■ Stop Bot</button>
+    <div class="image-test">
+      <input id="imageUrlInput" type="text" placeholder="Image URL" />
+      <select id="imageMethodSelect">
+        <option value="clipboard">Clipboard paste</option>
+        <option value="upload">File upload</option>
+      </select>
+      <button id="sendImageButton" class="main-button">Send Test Image</button>
+    </div>
     <div id="status" class="status"></div>
     <div class="footer">
       <span>Need help? <a href="https://github.com/JhonCalle/Facebook-MarketplaceBot-Extension" target="_blank">Docs</a></span>
