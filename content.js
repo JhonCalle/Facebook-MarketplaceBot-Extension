@@ -169,11 +169,23 @@ const UNREAD_DOT_SELECTOR =
     updateStep(step, lines = [], countdown) {
       const parts = [];
       if (countdown !== undefined) {
-        parts.push(`<div style="font-size:28px;margin-bottom:8px;">${countdown}</div>`);
+        parts.push(`<div style="font-size:32px;margin-bottom:12px;font-weight:bold;color:#fff;background:rgba(0,0,0,0.2);border-radius:8px;padding:8px 16px;box-shadow:0 2px 8px #0002;">${countdown}</div>`);
       }
-      parts.push(`<div style="font-size:22px;margin-bottom:12px;">${step}</div>`);
-      parts.push(...lines.map(l => `<div style="margin:4px 0;">${l}</div>`));
-      const html = parts.join('<hr style="width:60%;border-color:#fff3;">');
+      parts.push(`<div style="font-size:26px;margin-bottom:16px;font-weight:bold;color:#fff;text-shadow:0 2px 8px #0004;letter-spacing:1px;">${step}</div>`);
+      if (lines.length) {
+        parts.push('<div style="background:rgba(255,255,255,0.12);border-radius:8px;padding:12px 18px;box-shadow:0 1px 4px #0001;max-width:90%;margin:auto;">');
+        for (const l of lines) {
+          const lineStr = typeof l === 'string' ? l : String(l);
+          if (lineStr.startsWith('[Image]')) {
+            const url = lineStr.replace('[Image] ', '').trim();
+            parts.push(`<div style="margin:10px 0;text-align:center;"><img src="${url}" style="max-width:180px;max-height:120px;border-radius:6px;box-shadow:0 2px 8px #0002;display:inline-block;vertical-align:middle;" alt="Image preview" /></div>`);
+          } else {
+            parts.push(`<div style="margin:8px 0;font-size:18px;color:#fff;">${lineStr}</div>`);
+          }
+        }
+        parts.push('</div>');
+      }
+      const html = parts.join('');
       this.update(html);
     },
     // Remove the overlay from the page
@@ -370,21 +382,24 @@ const UNREAD_DOT_SELECTOR =
      * Returns true on success and false if the composer could not be found.
      */
     async sendMessage(text) {
+      log('[Messenger.sendMessage] Called with text:', text);
       const composer = this.focusComposer();
       if (!composer) {
-        log('Composer not found – cannot send message');
+        log('[Messenger.sendMessage] Composer not found – cannot send message');
         return false;
       }
 
       this.clearComposer(composer);
-      this.insertText(composer, text);
+      log('[Messenger.sendMessage] Composer cleared');
+      await this.insertText(composer, text);
+      log('[Messenger.sendMessage] Text inserted');
       await delay(500);
 
       const enterDown = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
       const enterUp   = new KeyboardEvent('keyup',   { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
       composer.dispatchEvent(enterDown);
       composer.dispatchEvent(enterUp);
-      log('Mensaje enviado');
+      log('[Messenger.sendMessage] Enter dispatched, message sent');
       return true;
     },
 
@@ -471,7 +486,6 @@ const UNREAD_DOT_SELECTOR =
       
       try {
         log('Sending chat data to webhook', { webhookUrl, chatData });
-        
         const response = await fetch(webhookUrl, {
           method: 'POST',
           headers: {
@@ -479,27 +493,34 @@ const UNREAD_DOT_SELECTOR =
           },
           body: JSON.stringify(chatData),
         });
-        
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
         }
-        
         const responseData = await response.json();
         log('Webhook response received', responseData);
 
+        // Handle nested output.response array
         let replies = [];
-        if (Array.isArray(responseData.response)) {
+        if (Array.isArray(responseData)) {
+          // If response is an array, take first element's output.response
+          if (responseData[0]?.output?.response) {
+            replies = responseData[0].output.response;
+          }
+        } else if (responseData.output?.response) {
+          replies = responseData.output.response;
+        } else if (Array.isArray(responseData.response)) {
           replies = responseData.response;
         } else if (typeof responseData.response === 'string') {
           replies = [responseData.response];
         }
+
+        log('[ApiClient] Extracted replies:', replies);
 
         if (!replies.length) {
           replies = ['Respuesta recibida del servidor sin contenido de respuesta.'];
         }
 
         return { replies };
-        
       } catch (error) {
         console.error('Error sending data to webhook:', error);
         return { replies: [`Error al conectar con el servidor: ${error.message}`] };
@@ -517,24 +538,31 @@ const UNREAD_DOT_SELECTOR =
     return aria.endsWith('unread') || aria.endsWith('sin leer');
   }
 
-  function isImageReply(text) {
-    return typeof text === 'string' && (
-      /^data:image\//i.test(text.trim()) ||
-      /\.(png|jpe?g|gif|bmp|webp)(\?.*)?$/i.test(text.trim())
-    );
-  }
-
-  async function sendReplyContent(content) {
-    if (isImageReply(content)) {
+  // Accepts a message object: { type: 'text'|'image', content?, url? }
+  async function sendReplyContent(msgObj) {
+    log('[sendReplyContent] Received:', msgObj);
+    if (!msgObj) {
+      log('[sendReplyContent] msgObj is null/undefined');
+      return;
+    }
+    if (msgObj.type === 'image' && msgObj.url) {
+      log('[sendReplyContent] Detected image reply:', msgObj.url);
       try {
-        const dataUrl = content.startsWith('data:') ? content : await fetchImageViaBackground(content);
+        const dataUrl = msgObj.url.startsWith('data:') ? msgObj.url : await fetchImageViaBackground(msgObj.url);
         const blob = dataURLToBlob(dataUrl);
+        log('[sendReplyContent] Sending image blob:', blob);
         await ImageSender.sendImage(blob);
       } catch (err) {
         log('Failed to send image reply', err);
       }
+    } else if (msgObj.type === 'text' && msgObj.content) {
+      log('[sendReplyContent] Detected text reply:', msgObj.content);
+      await Messenger.sendMessage(msgObj.content);
+    } else if (typeof msgObj === 'string') {
+      log('[sendReplyContent] Detected legacy string reply:', msgObj);
+      await Messenger.sendMessage(msgObj);
     } else {
-      await Messenger.sendMessage(content);
+      log('[sendReplyContent] Unknown reply format:', msgObj);
     }
   }
 
@@ -627,12 +655,30 @@ const UNREAD_DOT_SELECTOR =
         // ────────────────────────────────────────────────────────────────
         // 2) Mostrar pre-visualización durante 5 seg para permitir cancelar
         // ────────────────────────────────────────────────────────────────
-        const previewText =
-          `Title chat ${chatTitle}\n` +
-          `Messages:\n${messages.map(m => `${m.sender}: ${m.text}`).join('\n')}\n` +
-          `Response to be send: ${replies.join('\n')}`;
-
-        Overlay.show(previewText);
+        // Enhanced preview formatting for overlay
+        let previewLines = [];
+        previewLines.push(`Chat: <span style='color:#ffd700;'>${chatTitle}</span>`);
+        previewLines.push('');
+        previewLines.push('<b>Last messages:</b>');
+        previewLines.push(...messages.map(m => `${m.sender === 'seller' ? '<span style="color:#4caf50;">Vendedor</span>' : '<span style="color:#2196f3;">Comprador</span>'}: ${m.text}`));
+        previewLines.push('');
+        previewLines.push('<b>Response to be sent:</b>');
+        if (Array.isArray(replies)) {
+          previewLines.push(...replies.map((r, idx) => {
+            log(`[Overlay Preview] Reply ${idx}:`, r);
+            if (typeof r === 'object' && r !== null) {
+              if (r.type === 'image' && r.url) return `[Image] ${r.url}`;
+              if (r.type === 'text' && r.content) return r.content;
+              // fallback for other object types: show prettified JSON
+              return `<pre style='font-size:12px;'>${JSON.stringify(r, null, 2)}</pre>`;
+            }
+            return typeof r === 'string' ? r : String(r);
+          }));
+        } else {
+          previewLines.push(typeof replies === 'object' ? JSON.stringify(replies, null, 2) : String(replies));
+        }
+        log('[Overlay Preview] previewLines:', previewLines);
+        Overlay.updateStep('Previsualización de respuesta', previewLines);
 
         for (let t = 0; t < 5000 && isCycling; t += 500) {
           await delay(500);
@@ -641,11 +687,17 @@ const UNREAD_DOT_SELECTOR =
         // Si el usuario no canceló, enviar la respuesta
         if (isCycling) {
           Overlay.update('Enviando respuesta...');
-          for (const msg of replies) {
-            await sendReplyContent(msg);
-            if (msg !== replies[replies.length - 1]) {
-              await pause(3000, 'Waiting', []);
+          if (Array.isArray(replies)) {
+            for (let i = 0; i < replies.length; i++) {
+              log(`[SendReply] Sending reply ${i}:`, replies[i]);
+              await sendReplyContent(replies[i]);
+              if (i !== replies.length - 1) {
+                await pause(3000, 'Waiting', []);
+              }
             }
+          } else {
+            log('[SendReply] Sending single reply:', replies);
+            await sendReplyContent(replies);
           }
         } else {
           log('Envío cancelado por el usuario');

@@ -32,7 +32,7 @@
       "matches": [
         "https://www.messenger.com/marketplace/*"
       ],
-      "js": ["content.js", "imageSenderEnhanced.js"],
+      "js": ["content.js"],
       "run_at": "document_end"
     }
   ],
