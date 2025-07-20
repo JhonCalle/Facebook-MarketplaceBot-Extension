@@ -32,7 +32,8 @@
       "matches": [
         "https://www.messenger.com/marketplace/*"
       ],
-      "js": ["content.js"],
+      "css": ["overlay.css"],
+      "js": ["utils.js", "content.js"],
       "run_at": "document_end"
     }
   ],

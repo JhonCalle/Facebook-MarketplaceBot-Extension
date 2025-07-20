@@ -44,18 +44,19 @@
     DEFAULT_DELAY_MS     : 1500,
     WAIT_FOR_ELEMENT_MS  : 5000,
     WAIT_FOR_INTERVAL_MS : 100,
+    DEFAULT_WEBHOOK_URL  : 'https://n8nimpulsa.zapto.org/webhook/ImpulsaAIbot',
+    MARKETPLACE_TEXT     : 'Marketplace',
+    SCAN_BUFFER          : 30,
+    UNREAD_SCAN_LIMIT    : 20,
     WAIT: {
-      inChat: 1000,         // Wait after opening chat
-      beforeAPI: 1000,      // Wait before sending to API
-      afterAPI: 15000,       // Wait after API response
-      betweenReplies: 3000,  // Wait between sending replies
-      afterLastReply: 1000,  // Wait after last reply
-      noUnread: 2000         // Wait if no unread chats
+      inChat: 1000,
+      beforeAPI: 1000,
+      afterAPI: 15000,
+      betweenReplies: 3000,
+      afterLastReply: 1000,
+      noUnread: 2000
     }
   };
-
-  // Default API endpoint used when no custom value is stored
-  const DEFAULT_WEBHOOK_URL = 'https://n8nimpulsa.zapto.org/webhook/ImpulsaAIbot';
 
   const SELECTORS = {
     composer        : '[contenteditable="true"][role="textbox"]',
@@ -74,31 +75,8 @@
 const UNREAD_DOT_SELECTOR =
   'div[role="button"][aria-hidden="true"] span[data-visualcompletion="ignore"]';
 
-  // Simple storage helper used throughout the script
-  const Storage = {
-    /** Retrieve numeric value from storage or fallback. */
-    async getNumber(key, fallback) {
-      return new Promise(resolve => {
-        chrome.storage.local.get([key], result => {
-          resolve(parseInt(result[key], 10) || fallback);
-        });
-      });
-    },
-    /** Retrieve string value from storage or fallback. */
-    async getString(key, fallback) {
-      return new Promise(resolve => {
-        chrome.storage.local.get([key], result => {
-          resolve(result[key] || fallback);
-        });
-      });
-    },
-    /** Persist a value in storage. */
-    async set(key, value) {
-      return new Promise(resolve => {
-        chrome.storage.local.set({ [key]: value }, () => resolve());
-      });
-    }
-  };
+  // Storage helper provided by utils.js
+  const { Storage, waitFor, delay, pause, dataURLToBlob, formatRepliesForPreview } = window.MPUtils;
 
   // Regex pre‑compilation ------------------------------------------------------
   const REGEX = {
@@ -120,8 +98,26 @@ const UNREAD_DOT_SELECTOR =
     suggested_response5: /Toca una respuesta para enviársela al comprador./i
   };
 
+  const MESSAGE_FILTERS = [
+    /^enviado$/i,
+    REGEX.timeOnly,
+    REGEX.dateTimeText,
+    REGEX.numericDateTime,
+    REGEX.relativeTime,
+    REGEX.awaitingResponse,
+    REGEX.viewPost,
+    REGEX.sentLabel,
+    REGEX.sentLabel2,
+    REGEX.suggested_response1,
+    REGEX.suggested_response2,
+    REGEX.suggested_response3,
+    REGEX.suggested_response4,
+    REGEX.suggested_response5
+  ];
+
   // Internal state ------------------------------------------------------------
   let isCycling = false;
+  Object.defineProperty(window, 'isCycling', { get: () => isCycling, set: v => { isCycling = v; } });
   let isProcessingUnread = false;
 
   // ────────────────────────────────────────────────────────────────────────────
@@ -134,26 +130,13 @@ const UNREAD_DOT_SELECTOR =
       if (this.el) return;
       this.el = document.createElement('div');
       this.el.id = 'mpBotOverlay';
-      Object.assign(this.el.style, {
-        position: 'fixed',
-        inset: '0',
-        background: 'rgba(0,123,255,0.25)',
-        backdropFilter: 'blur(2px)',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: '2147483647'
-      });
       const msg = document.createElement('div');
       msg.id = 'mpBotOverlayMsg';
-      msg.style.cssText = 'color:#fff;font-size:20px;text-align:center;margin-bottom:16px;font-weight:bold;text-shadow:0 1px 2px rgba(0,0,0,.4);max-width:80%;white-space:pre-wrap;';
       this.msg = msg;
       this.el.appendChild(msg);
 
       const btn = document.createElement('button');
       btn.textContent = 'DETENER';
-      btn.style.cssText = 'padding:8px 16px;font-size:16px;background:#dc3545;color:#fff;border:none;border-radius:4px;cursor:pointer;';
       btn.addEventListener('click', () => {
         isCycling = false;
         ApiClient.abort();
@@ -215,6 +198,7 @@ const UNREAD_DOT_SELECTOR =
       }
     }
   };
+  window.Overlay = Overlay;
 
   // ────────────────────────────────────────────────────────────────────────────
   // Utilities
@@ -223,18 +207,6 @@ const UNREAD_DOT_SELECTOR =
     console.log(`[Marketplace Bot] ${message}`, data || '');
     chrome.runtime.sendMessage({ action: MSG.LOG, message, data });
   }
-
-  function formatRepliesForPreview(replies) {
-  return (Array.isArray(replies) ? replies : [replies]).map(r => {
-    if (typeof r === 'object' && r !== null) {
-      if (r.type === 'image' && r.url) return `[Image] ${r.url}`;
-      if (r.type === 'text'  && (r.content || r.text)) return r.content || r.text;
-      return JSON.stringify(r, null, 2);
-    }
-    return String(r);
-  });
-}
-
 
   // ---------------------------------------------------------------
   // ImageSender – attach and send images using the file input only
@@ -320,37 +292,7 @@ const UNREAD_DOT_SELECTOR =
 
 
 
-  function waitFor(conditionFn, interval = CONFIG.WAIT_FOR_INTERVAL_MS, timeout = CONFIG.WAIT_FOR_ELEMENT_MS) {
-    return new Promise(resolve => {
-      const start = Date.now();
-      const id = setInterval(() => {
-        if (conditionFn()) {
-          clearInterval(id);
-          resolve(true);
-        } else if (Date.now() - start > timeout) {
-          clearInterval(id);
-          resolve(false);
-        }
-      }, interval);
-    });
-  }
-
-  function delay(ms) {
-    return new Promise(r => setTimeout(r, ms));
-  }
-
-  async function pause(ms, step, lines = []) {
-    const end = Date.now() + ms;
-    let last = -1;
-    while (isCycling && Date.now() < end) {
-      const remaining = Math.ceil((end - Date.now()) / 1000);
-      if (step && remaining !== last) {
-        Overlay.updateStep(step, lines, `${remaining}s`);
-        last = remaining;
-      }
-      await delay(500);
-    }
-  }
+  // helpers waitFor/delay/pause provided by utils.js
 
   // ────────────────────────────────────────────────────────────────────────────
   // Messenger helpers (DOM operations only)
@@ -483,23 +425,8 @@ const UNREAD_DOT_SELECTOR =
 
       const filtered = messages.filter(m => {
         const t = m.text.toLowerCase();
-        if (!t) return false;
-        if (t === 'enter') return false;
-        if (REGEX.justSent.test(t)) return false;
-        if (t === clientName) return false;
-        if (REGEX.timeOnly.test(t)) return false;
-        if (REGEX.dateTimeText.test(t) || REGEX.numericDateTime.test(t)) return false;
-        if (REGEX.relativeTime.test(t)) return false;
-        if (REGEX.awaitingResponse.test(t)) return false;
-        if (REGEX.viewPost.test(t)) return false;
-        if (REGEX.sentLabel.test(t)) return false;
-        if (REGEX.sentLabel2.test(t)) return false;
-        if (REGEX.suggested_response1.test(t)) return false;
-        if (REGEX.suggested_response2.test(t)) return false;
-        if (REGEX.suggested_response3.test(t)) return false;
-        if (REGEX.suggested_response4.test(t)) return false;
-        if (REGEX.suggested_response5.test(t)) return false;
-        return true;
+        if (!t || t === 'enter' || t === clientName) return false;
+        return MESSAGE_FILTERS.every(rx => !rx.test(t));
       });
 
       return filtered.slice(-limit);
@@ -521,7 +448,7 @@ const UNREAD_DOT_SELECTOR =
      * @param {object} chatData Data describing the chat
      */
     async sendChat(chatData) {
-      const webhookUrl = await Storage.getString('webhookUrl', DEFAULT_WEBHOOK_URL);
+      const webhookUrl = await Storage.getString('webhookUrl', CONFIG.DEFAULT_WEBHOOK_URL);
       this.abortController = new AbortController();
       
       try {
@@ -620,11 +547,6 @@ const UNREAD_DOT_SELECTOR =
       if (!isCycling) { log('[sendReplyContent] Aborted before sending text'); return; }
       await Messenger.sendMessage(msgObj.content);
       if (!isCycling) { log('[sendReplyContent] Aborted after sending text'); return; }
-    } else if (typeof msgObj === 'string') {
-      log('[sendReplyContent] Detected legacy string reply:', msgObj);
-      if (!isCycling) { log('[sendReplyContent] Aborted before sending legacy'); return; }
-      await Messenger.sendMessage(msgObj);
-      if (!isCycling) { log('[sendReplyContent] Aborted after sending legacy'); return; }
     } else {
       log('[sendReplyContent] Unknown reply format:', msgObj);
     }
@@ -644,7 +566,7 @@ const UNREAD_DOT_SELECTOR =
     // 1️⃣ Restrict to the Marketplace nav section when available
     const container = (() => {
       const spanMarketplace = Array.from(document.querySelectorAll('span[dir="auto"]'))
-        .find(el => el.textContent.trim() === 'Marketplace');
+        .find(el => el.textContent.trim() === CONFIG.MARKETPLACE_TEXT);
       const nav = spanMarketplace?.closest('div[role="navigation"]');
       return nav || document;
     })();
@@ -684,7 +606,7 @@ const UNREAD_DOT_SELECTOR =
       isCycling = true;
     
       // Siempre obtenemos 20 IDs pero solo procesamos hasta "chatLimit"
-      const allChats      = await this.scanTopChats(30);
+      const allChats      = await this.scanTopChats(CONFIG.SCAN_BUFFER);
       const stopCount     = Math.min(chatLimit, allChats.length);
       const chatsToHandle = allChats.slice(0, stopCount);
       const results       = [];
@@ -719,36 +641,17 @@ const UNREAD_DOT_SELECTOR =
         // ────────────────────────────────────────────────────────────────
         // 2) Mostrar pre-visualización durante 5 seg para permitir cancelar
         // ────────────────────────────────────────────────────────────────
-        // Enhanced preview formatting for overlay
-        let previewLines = [];
-        previewLines.push(`Chat: <span style='color:#ffd700;'>${chatTitle}</span>`);
-        previewLines.push('');
-        previewLines.push('<b>Last messages:</b>');
-        previewLines.push(...messages.map(m => `${m.sender === 'seller' ? '<span style="color:#4caf50;">Vendedor</span>' : '<span style="color:#2196f3;">Comprador</span>'}: ${m.text}`));
-        previewLines.push('');
-        previewLines.push('<b>Response to be sent:</b>');
-        if (Array.isArray(replies)) {
-          previewLines.push(...replies.map((r, idx) => {
-            log(`[Overlay Preview] Reply ${idx}:`, r);
-            if (typeof r === 'object' && r !== null) {
-              if (r.type === 'image' && r.url) return `[Image] ${r.url}`;
-              if (r.type === 'text' && r.content) return String(r.content);
-              // fallback for other object types: show prettified JSON
-              return `<pre style='font-size:12px;'>${JSON.stringify(r, null, 2)}</pre>`;
-            }
-            if (typeof r === 'string') return r;
-            // fallback: show JSON for any other type
-            return `<pre style='font-size:12px;'>${JSON.stringify(r, null, 2)}</pre>`;
-          }));
-        } else {
-          previewLines.push(typeof replies === 'object' ? JSON.stringify(replies, null, 2) : String(replies));
-        }
-        log('[Overlay Preview] previewLines:', previewLines);
+        const previewLines = [
+          `Chat: <span style='color:#ffd700;'>${chatTitle}</span>`,
+          '',
+          '<b>Last messages:</b>',
+          ...messages.map(m => `${m.sender === 'seller' ? '<span style="color:#4caf50;">Vendedor</span>' : '<span style="color:#2196f3;">Comprador</span>'}: ${m.text}`),
+          '',
+          '<b>Response to be sent:</b>',
+          ...formatRepliesForPreview(replies)
+        ];
         Overlay.updateStep('Previsualización de respuesta', previewLines);
-
-        for (let t = 0; t < 5000 && isCycling; t += 500) {
-          await delay(500);
-        }
+        await pause(5000, 'Preview');
 
         // Si el usuario no canceló, enviar la respuesta
         if (isCycling) {
@@ -788,7 +691,7 @@ const UNREAD_DOT_SELECTOR =
 
       try {
         log('Scanning top chats', { step: 'Scanning chats...' });
-        const chats = await this.scanTopChats(20);
+        const chats = await this.scanTopChats(CONFIG.UNREAD_SCAN_LIMIT);
         log('Chats scanned', { step: 'Chats scanned', chatList: chats });
         const unread = chats.filter(c => c.unread);
         if (!unread.length) {
@@ -840,7 +743,7 @@ const UNREAD_DOT_SELECTOR =
       isCycling = true;
       try {
         Overlay.show('Scanning chats...');
-        const chats = await this.scanTopChats(20);
+        const chats = await this.scanTopChats(CONFIG.UNREAD_SCAN_LIMIT);
         const unread = chats.filter(c => c.unread).slice(-chatLimit).reverse();
         log('Unread chats', { step: 'Chats scanned', chatList: unread });
         if (!unread.length) {
@@ -865,17 +768,7 @@ const UNREAD_DOT_SELECTOR =
           await pause(CONFIG.WAIT.afterAPI, 'API Response', formatRepliesForPreview(replies));
           if (!isCycling) break;
           for (const msg of replies) {
-            let previewMsg;
-            if (typeof msg === 'object' && msg !== null) {
-              if (msg.type === 'image' && msg.url) previewMsg = `[Image] ${msg.url}`;
-              else if (msg.type === 'text' && msg.content) previewMsg = String(msg.content);
-              else previewMsg = `<pre style='font-size:12px;'>${JSON.stringify(msg, null, 2)}</pre>`;
-            } else if (typeof msg === 'string') {
-              previewMsg = msg;
-            } else {
-              previewMsg = `<pre style='font-size:12px;'>${JSON.stringify(msg, null, 2)}</pre>`;
-            }
-            Overlay.updateStep('Sending reply', [previewMsg]);
+            Overlay.updateStep('Sending reply', formatRepliesForPreview(msg));
             await sendReplyContent(msg);
             if (msg !== replies[replies.length - 1]) {
               await pause(CONFIG.WAIT.betweenReplies, 'Waiting', []);
@@ -948,6 +841,28 @@ const UNREAD_DOT_SELECTOR =
         case MSG.CYCLE_CHATS:
           ChatScanner.collectChatsData(CONFIG.DEFAULT_CHAT_LIMIT, CONFIG.DEFAULT_MSG_LIMIT, CONFIG.DEFAULT_DELAY_MS);
           sendResponse({ started: true });
+          break;
+
+        case MSG.START_BOT: {
+          if (isCycling) { sendResponse({ started: false, reason: 'already_running' }); break; }
+          const limit = request.chatLimit || CONFIG.DEFAULT_CHAT_LIMIT;
+          ChatScanner.processUnreadChats(limit, CONFIG.DEFAULT_MSG_LIMIT);
+          sendResponse({ started: true });
+          break;
+        }
+
+        case MSG.STOP_BOT:
+          isCycling = false;
+          ApiClient.abort();
+          const composer = document.querySelector(SELECTORS.composer);
+          if (composer) {
+            composer.focus();
+            document.execCommand('selectAll', false, null);
+            document.execCommand('delete', false, null);
+          }
+          Overlay.update('Deteniendo...');
+          setTimeout(() => Overlay.hide(), 800);
+          sendResponse({ stopped: true });
           break;
 
         case MSG.SCAN_DETAILED: {
@@ -1030,17 +945,7 @@ const UNREAD_DOT_SELECTOR =
     });
   }
 
-  // Helper: convert dataURL to Blob
-  function dataURLToBlob(dataUrl) {
-    const arr = dataUrl.split(','), mime = arr[0].match(/:(.*?);/)[1];
-    const bstr = atob(arr[1]);
-    let n = bstr.length;
-    const u8arr = new Uint8Array(n);
-    while (n--) {
-      u8arr[n] = bstr.charCodeAt(n);
-    }
-    return new Blob([u8arr], { type: mime });
-  }
+  // dataURLToBlob provided by utils.js
   // ────────────────────────────────────────────────────────────────────────────
 
   // Detect single-page navigation and trigger a check when navigating to
@@ -1066,27 +971,7 @@ const UNREAD_DOT_SELECTOR =
 
     chrome.runtime.onMessage.addListener(handleMessage);
 
-    // Listener for simplified popup commands
-    chrome.runtime.onMessage.addListener(async (req, sender, sendResponse) => {
-      if (req.action === MSG.START_BOT) {
-        if (isCycling) { sendResponse({ started: false, reason: 'already_running' }); return; }
-        const limit = req.chatLimit || CONFIG.DEFAULT_CHAT_LIMIT;
-        ChatScanner.processUnreadChats(limit, CONFIG.DEFAULT_MSG_LIMIT);
-        sendResponse({ started: true });
-      } else if (req.action === MSG.STOP_BOT) {
-        isCycling = false;
-        ApiClient.abort();
-        const composer = document.querySelector(SELECTORS.composer);
-        if (composer) {
-          composer.focus();
-          document.execCommand('selectAll', false, null);
-          document.execCommand('delete', false, null);
-        }
-        Overlay.update('Deteniendo...');
-        setTimeout(() => Overlay.hide(), 800);
-        sendResponse({ stopped: true });
-      }
-    });
+    // commands handled in handleMessage
 
     onUrlChange();
   }
