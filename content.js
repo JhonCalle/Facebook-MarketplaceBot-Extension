@@ -54,6 +54,9 @@
     }
   };
 
+  // Default API endpoint used when no custom value is stored
+  const DEFAULT_WEBHOOK_URL = 'https://n8nimpulsa.zapto.org/webhook/ImpulsaAIbot';
+
   const SELECTORS = {
     composer        : '[contenteditable="true"][role="textbox"]',
     messageGroup    : 'div[data-testid="message-group"], div[role="row"]',
@@ -73,15 +76,26 @@ const UNREAD_DOT_SELECTOR =
 
   // Simple storage helper used throughout the script
   const Storage = {
-    /**
-     * Retrieve a numeric value from chrome.storage.local, returning
-     * `fallback` when the value is missing or invalid.
-     */
+    /** Retrieve numeric value from storage or fallback. */
     async getNumber(key, fallback) {
       return new Promise(resolve => {
         chrome.storage.local.get([key], result => {
           resolve(parseInt(result[key], 10) || fallback);
         });
+      });
+    },
+    /** Retrieve string value from storage or fallback. */
+    async getString(key, fallback) {
+      return new Promise(resolve => {
+        chrome.storage.local.get([key], result => {
+          resolve(result[key] || fallback);
+        });
+      });
+    },
+    /** Persist a value in storage. */
+    async set(key, value) {
+      return new Promise(resolve => {
+        chrome.storage.local.set({ [key]: value }, () => resolve());
       });
     }
   };
@@ -115,7 +129,7 @@ const UNREAD_DOT_SELECTOR =
   // ────────────────────────────────────────────────────────────────────────────
   // Lightweight UI overlay displayed while the bot is scanning chats.
   const Overlay = {
-    // Create DOM elements if they do not exist yet
+    // Create DOM elements for the overlay if they do not exist yet
     ensure() {
       if (this.el) return;
       this.el = document.createElement('div');
@@ -142,6 +156,7 @@ const UNREAD_DOT_SELECTOR =
       btn.style.cssText = 'padding:8px 16px;font-size:16px;background:#dc3545;color:#fff;border:none;border-radius:4px;cursor:pointer;';
       btn.addEventListener('click', () => {
         isCycling = false;
+        ApiClient.abort();
         this.update('Detenido por usuario');
         const composer = document.querySelector(SELECTORS.composer);
         if (composer) {
@@ -155,17 +170,21 @@ const UNREAD_DOT_SELECTOR =
 
       document.body.appendChild(this.el);
     },
-    // Display the overlay with an optional message
+    /** Show the overlay, optionally with custom text. */
     show(text = 'Ejecutando...') {
       this.ensure();
       this.update(text);
       this.el.style.display = 'flex';
     },
-    // Update the text shown on the overlay
+    /** Update the text shown on the overlay. */
     update(text) {
       if (!this.el) this.ensure();
       this.msg.innerHTML = text;
     },
+    /**
+     * Render a step with optional lines and countdown timer.
+     * Objects in `lines` are stringified for readability.
+     */
     updateStep(step, lines = [], countdown) {
       const parts = [];
       if (countdown !== undefined) {
@@ -175,7 +194,7 @@ const UNREAD_DOT_SELECTOR =
       if (lines.length) {
         parts.push('<div style="background:rgba(255,255,255,0.12);border-radius:8px;padding:12px 18px;box-shadow:0 1px 4px #0001;max-width:90%;margin:auto;">');
         for (const l of lines) {
-          const lineStr = typeof l === 'string' ? l : String(l);
+          const lineStr = typeof l === 'string' ? l : JSON.stringify(l, null, 2);
           if (lineStr.startsWith('[Image]')) {
             const url = lineStr.replace('[Image] ', '').trim();
             parts.push(`<div style="margin:10px 0;text-align:center;"><img src="${url}" style="max-width:180px;max-height:120px;border-radius:6px;box-shadow:0 2px 8px #0002;display:inline-block;vertical-align:middle;" alt="Image preview" /></div>`);
@@ -188,7 +207,7 @@ const UNREAD_DOT_SELECTOR =
       const html = parts.join('');
       this.update(html);
     },
-    // Remove the overlay from the page
+    /** Remove the overlay from the page. */
     hide() {
       if (this.el) {
         this.el.remove();
@@ -379,10 +398,11 @@ const UNREAD_DOT_SELECTOR =
 
     /**
      * Sends a message through the open Messenger chat.
-     * Returns true on success and false if the composer could not be found.
+     * Aborts and returns false if the global cycle flag is cleared.
      */
     async sendMessage(text) {
       log('[Messenger.sendMessage] Called with text:', text);
+      if (!isCycling) { log('[Messenger.sendMessage] Aborted'); return false; }
       const composer = this.focusComposer();
       if (!composer) {
         log('[Messenger.sendMessage] Composer not found – cannot send message');
@@ -392,8 +412,10 @@ const UNREAD_DOT_SELECTOR =
       this.clearComposer(composer);
       log('[Messenger.sendMessage] Composer cleared');
       await this.insertText(composer, text);
+      if (!isCycling) { log('[Messenger.sendMessage] Aborted after insert'); return false; }
       log('[Messenger.sendMessage] Text inserted');
       await delay(500);
+      if (!isCycling) { log('[Messenger.sendMessage] Aborted before send'); return false; }
 
       const enterDown = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
       const enterUp   = new KeyboardEvent('keyup',   { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
@@ -476,13 +498,19 @@ const UNREAD_DOT_SELECTOR =
   // ApiClient – Placeholder for phase 2
   // ────────────────────────────────────────────────────────────────────────────
   const ApiClient = {
+    abortController: null,
     /**
      * Send chatData to external server and return the response.
      * @param {object} chatData – { clientName, chatName, messages, chatId, listing }
    * @returns {Promise<{ replies: string[] } | null>}
      */
+    /**
+     * Send chat data to the configured webhook endpoint.
+     * @param {object} chatData Data describing the chat
+     */
     async sendChat(chatData) {
-      const webhookUrl = 'https://n8nimpulsa.zapto.org/webhook/ImpulsaAIbot';
+      const webhookUrl = await Storage.getString('webhookUrl', DEFAULT_WEBHOOK_URL);
+      this.abortController = new AbortController();
       
       try {
         log('Sending chat data to webhook', { webhookUrl, chatData });
@@ -492,6 +520,7 @@ const UNREAD_DOT_SELECTOR =
             'Content-Type': 'application/json',
           },
           body: JSON.stringify(chatData),
+          signal: this.abortController.signal
         });
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
@@ -522,8 +551,20 @@ const UNREAD_DOT_SELECTOR =
 
         return { replies };
       } catch (error) {
+        if (error.name === 'AbortError') {
+          log('Webhook request aborted');
+          return { replies: [] };
+        }
         console.error('Error sending data to webhook:', error);
         return { replies: [`Error al conectar con el servidor: ${error.message}`] };
+      }
+    }
+    ,
+    /** Abort any in-flight webhook request. */
+    abort() {
+      if (this.abortController) {
+        this.abortController.abort();
+        this.abortController = null;
       }
     }
   };
@@ -539,8 +580,13 @@ const UNREAD_DOT_SELECTOR =
   }
 
   // Accepts a message object: { type: 'text'|'image', content?, url? }
+  /**
+   * Send either text or image reply depending on msgObj contents.
+   * Aborts immediately if the global cycle flag is cleared.
+   */
   async function sendReplyContent(msgObj) {
     log('[sendReplyContent] Received:', msgObj);
+    if (!isCycling) { log('[sendReplyContent] Aborted'); return; }
     if (!msgObj) {
       log('[sendReplyContent] msgObj is null/undefined');
       return;
@@ -551,16 +597,22 @@ const UNREAD_DOT_SELECTOR =
         const dataUrl = msgObj.url.startsWith('data:') ? msgObj.url : await fetchImageViaBackground(msgObj.url);
         const blob = dataURLToBlob(dataUrl);
         log('[sendReplyContent] Sending image blob:', blob);
+        if (!isCycling) { log('[sendReplyContent] Aborted before sending image'); return; }
         await ImageSender.sendImage(blob);
+        if (!isCycling) { log('[sendReplyContent] Aborted after sending image'); return; }
       } catch (err) {
         log('Failed to send image reply', err);
       }
     } else if (msgObj.type === 'text' && msgObj.content) {
       log('[sendReplyContent] Detected text reply:', msgObj.content);
+      if (!isCycling) { log('[sendReplyContent] Aborted before sending text'); return; }
       await Messenger.sendMessage(msgObj.content);
+      if (!isCycling) { log('[sendReplyContent] Aborted after sending text'); return; }
     } else if (typeof msgObj === 'string') {
       log('[sendReplyContent] Detected legacy string reply:', msgObj);
+      if (!isCycling) { log('[sendReplyContent] Aborted before sending legacy'); return; }
       await Messenger.sendMessage(msgObj);
+      if (!isCycling) { log('[sendReplyContent] Aborted after sending legacy'); return; }
     } else {
       log('[sendReplyContent] Unknown reply format:', msgObj);
     }
@@ -765,6 +817,10 @@ const UNREAD_DOT_SELECTOR =
       }
     },
 
+    /**
+     * Iterate over unread chats and send replies using the API.
+     * Respects the global cycle flag to allow cancellation.
+     */
     async processUnreadChats(chatLimit = 20, msgLimit = 20) {
       if (isCycling) { log('processUnreadChats already running'); return; }
       isCycling = true;
@@ -995,6 +1051,7 @@ const UNREAD_DOT_SELECTOR =
         sendResponse({ started: true });
       } else if (req.action === MSG.STOP_BOT) {
         isCycling = false;
+        ApiClient.abort();
         const composer = document.querySelector(SELECTORS.composer);
         if (composer) {
           composer.focus();

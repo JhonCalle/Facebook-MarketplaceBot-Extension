@@ -1,8 +1,26 @@
 document.addEventListener('DOMContentLoaded', () => {
   const startBtn = document.getElementById('startBotButton');
   const stopBtn = document.getElementById('stopBotButton');
+  const webhookInput = document.getElementById('webhookUrlInput');
   const statusEl = document.getElementById('status');
 
+  const DEFAULT_WEBHOOK = 'https://n8nimpulsa.zapto.org/webhook/ImpulsaAIbot';
+
+  // Load saved webhook URL when popup opens
+  chrome.storage.local.get(['webhookUrl'], (res) => {
+    webhookInput.value = res.webhookUrl || DEFAULT_WEBHOOK;
+  });
+
+  // Persist webhook URL whenever the field changes
+  webhookInput.addEventListener('change', () => {
+    chrome.storage.local.set({ webhookUrl: webhookInput.value });
+  });
+
+  /**
+   * Display a status message in the popup and optionally mark it as error.
+   * @param {string|object} msg
+   * @param {boolean} [isError=false]
+   */
   function setStatus(msg, isError = false) {
     if (typeof msg === 'object' && msg !== null) {
       statusEl.textContent = JSON.stringify(msg, null, 2);
@@ -12,6 +30,10 @@ document.addEventListener('DOMContentLoaded', () => {
     statusEl.classList.toggle('error', !!isError);
   }
 
+  /**
+   * Ensure the content script is injected into the active tab.
+   * Returns true when messaging is possible.
+   */
   async function ensureContentScript() {
     setStatus('Checking page...');
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -36,10 +58,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  // Start bot button handler
   startBtn?.addEventListener('click', async () => {
     startBtn.disabled = true;
     stopBtn.disabled = true;
     setStatus('Starting bot...');
+    chrome.storage.local.set({ webhookUrl: webhookInput.value });
     const ready = await ensureContentScript();
     if (!ready) {
       setStatus('Not a supported page. Open Facebook Messenger.', true);
@@ -55,10 +79,12 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  // Stop bot button handler
   stopBtn?.addEventListener('click', async () => {
     startBtn.disabled = true;
     stopBtn.disabled = true;
     setStatus('Stopping bot...');
+    chrome.storage.local.set({ webhookUrl: webhookInput.value });
     const ready = await ensureContentScript();
     if (!ready) {
       setStatus('Not a supported page. Open Facebook Messenger.', true);
@@ -74,6 +100,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // Initial status
+  // Display initial status
   setStatus('Ready.');
 });
