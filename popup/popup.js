@@ -4,7 +4,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const statusEl = document.getElementById('status');
 
   function setStatus(msg, isError = false) {
-    statusEl.textContent = msg || '';
+    if (typeof msg === 'object' && msg !== null) {
+      statusEl.textContent = JSON.stringify(msg, null, 2);
+    } else {
+      statusEl.textContent = msg || '';
+    }
     statusEl.classList.toggle('error', !!isError);
   }
 
