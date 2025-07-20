@@ -224,6 +224,18 @@ const UNREAD_DOT_SELECTOR =
     chrome.runtime.sendMessage({ action: MSG.LOG, message, data });
   }
 
+  function formatRepliesForPreview(replies) {
+  return (Array.isArray(replies) ? replies : [replies]).map(r => {
+    if (typeof r === 'object' && r !== null) {
+      if (r.type === 'image' && r.url) return `[Image] ${r.url}`;
+      if (r.type === 'text'  && (r.content || r.text)) return r.content || r.text;
+      return JSON.stringify(r, null, 2);
+    }
+    return String(r);
+  });
+}
+
+
   // ---------------------------------------------------------------
   // ImageSender – attach and send images using the file input only
   // ---------------------------------------------------------------
@@ -720,11 +732,13 @@ const UNREAD_DOT_SELECTOR =
             log(`[Overlay Preview] Reply ${idx}:`, r);
             if (typeof r === 'object' && r !== null) {
               if (r.type === 'image' && r.url) return `[Image] ${r.url}`;
-              if (r.type === 'text' && r.content) return r.content;
+              if (r.type === 'text' && r.content) return String(r.content);
               // fallback for other object types: show prettified JSON
               return `<pre style='font-size:12px;'>${JSON.stringify(r, null, 2)}</pre>`;
             }
-            return typeof r === 'string' ? r : String(r);
+            if (typeof r === 'string') return r;
+            // fallback: show JSON for any other type
+            return `<pre style='font-size:12px;'>${JSON.stringify(r, null, 2)}</pre>`;
           }));
         } else {
           previewLines.push(typeof replies === 'object' ? JSON.stringify(replies, null, 2) : String(replies));
@@ -848,10 +862,20 @@ const UNREAD_DOT_SELECTOR =
           if (!isCycling) break;
           Overlay.updateStep('Sending to API', [chatTitle]);
           const { replies } = await ApiClient.sendChat({ chatId: chat.id, clientName, listing, chatName: chatTitle, messages });
-          await pause(CONFIG.WAIT.afterAPI, 'API Response', [replies.join('\n')]);
+          await pause(CONFIG.WAIT.afterAPI, 'API Response', formatRepliesForPreview(replies));
           if (!isCycling) break;
           for (const msg of replies) {
-            Overlay.updateStep('Sending reply', [msg]);
+            let previewMsg;
+            if (typeof msg === 'object' && msg !== null) {
+              if (msg.type === 'image' && msg.url) previewMsg = `[Image] ${msg.url}`;
+              else if (msg.type === 'text' && msg.content) previewMsg = String(msg.content);
+              else previewMsg = `<pre style='font-size:12px;'>${JSON.stringify(msg, null, 2)}</pre>`;
+            } else if (typeof msg === 'string') {
+              previewMsg = msg;
+            } else {
+              previewMsg = `<pre style='font-size:12px;'>${JSON.stringify(msg, null, 2)}</pre>`;
+            }
+            Overlay.updateStep('Sending reply', [previewMsg]);
             await sendReplyContent(msg);
             if (msg !== replies[replies.length - 1]) {
               await pause(CONFIG.WAIT.betweenReplies, 'Waiting', []);
