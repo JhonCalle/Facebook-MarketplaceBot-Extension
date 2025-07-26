@@ -75,22 +75,16 @@
     bubbleText     : 'span[dir="auto"]'
   };
 
-  /* ---------------------------------------------------------------
- *  Helper: does this <message‑group> belong to the seller (you)?
- * ------------------------------------------------------------- */
-function isGroupFromSeller(group) {
-  // 1. Preferred – any descendant matches our extended selector list
-  if (group.querySelector(SELECTORS.outgoingBubble)) return true;
+const BUBBLE_SELECTOR = 'div[data-scope="messages_table"][tabindex]';
+const enterRegex      = /^\s*enter\s*$/i;
+const sellerPrefixRx  = /^enviaste\S/i;  
 
-  // 2. Or the wrapper itself carries the flag
-  if (group.matches('[data-owner="self"], [data-ownership="self"]')) return true;
-
-  // 3. Fallback – text label (“Enviaste”, “You sent”)
-  if (/enviaste|you sent/i.test(group.textContent)) return true;
-
-  return false; // otherwise assume buyer
-}
-
+const SYSTEM_FILTERS = [
+  /^mensaje enviado$/i,
+  /^Ya pueden calificarse$/i,
+  /^Es posible que las personas se califiquen entre sí según sus interacciones o transacciones\./i,
+  /^Calificar a/i
+];
 
 /**
  * Selector that matches the *blue‑dot wrapper* of unread chats.
@@ -124,29 +118,6 @@ const UNREAD_DOT_SELECTOR =
     Enter: /Enter/i
 
   };
-
-  const MESSAGE_FILTERS = [
-    /^enviado$/i,
-    REGEX.timeOnly,
-    REGEX.dateTimeText,
-    REGEX.numericDateTime,
-    REGEX.relativeTime,
-    REGEX.awaitingResponse,
-    REGEX.viewPost,
-    REGEX.sentLabel,
-    REGEX.sentLabel2,
-    REGEX.suggested_response1,
-    REGEX.suggested_response2,
-    REGEX.suggested_response3,
-    REGEX.suggested_response4,
-    REGEX.suggested_response5,
-    REGEX.Enter,
-    /Agregar/i,
-    /Nombre/i,
-    /Ya pueden calificarse/i,   
-    /Es posible que las personas se califiquen entre sí según sus interacciones o transacciones./i,
-    /Mensaje enviado/i
-  ];
 
 
   // Internal state ------------------------------------------------------------
@@ -464,89 +435,76 @@ async loadOlder(pages = 5, pauseMs = 2000) {
 },
 
 /********************************************************************
- *  3)  extractLastMessages(limit = 20)
+ *  3)  extractLastMessages(limit = 100)
  *      Returns an array like:  [{ text, sender }, …]
  ********************************************************************/
 async extractLastMessages(limit = 20) {
-  // 1. Make sure the thread has enough history loaded
+  console.log('[extractLastMessages] start (limit=%d)', limit);
   await Messenger.loadOlder(5);
 
-  // 2. Find the wrapper for *this* conversation
   const thread = document.querySelector(SELECTORS.threadWrapper);
   if (!thread) {
-    console.warn('⚠️  Conversation wrapper not found – selector may be outdated.');
+    console.warn('⚠️  Conversation wrapper not found.');
     return [];
   }
 
-  // 3. Grab every message‑group element that belongs to the thread
-  const groups = thread.querySelectorAll(SELECTORS.messageGroup);
-  if (!groups.length) {
-    console.warn('⚠️  No message groups found – markup may have changed.');
-    return [];
-  }
+  const bubbles = thread.querySelectorAll(BUBBLE_SELECTOR);
+  console.log('[extractLastMessages] bubbles found:', bubbles.length);
+  if (!bubbles.length) return [];
 
   const messages   = [];
-  const enterRegex = /^\s*enter\s*$/i;          // filters litteral “Enter”
-  const clientName = (Messenger.extractChatTitle().split('·')[0] || '')
-                       .toLowerCase();          // first word of chat title
+  const clientName = Messenger.extractChatTitle().split('·')[0].trim();
+  const nameEsc    = clientName.replace(/[-/\\^$*+?.()|[\\]{}]/g, '\\$&');
+  const buyerDetect= new RegExp('^' + nameEsc + '\\S', 'i');   // name + non‑space
+  const buyerStrip = new RegExp('^' + nameEsc, 'i');
 
-  groups.forEach(group => {
-    /* --------------------------------------------------------------
-     * Who sent this *group*?
-     * ------------------------------------------------------------ */
-  const sender = isGroupFromSeller(group) ? 'seller' : 'buyer';
+  bubbles.forEach((bubble, bIdx) => {
+    const wholeText = bubble.textContent.replace(/\s+/g, ' ').trim();
 
+    // ── sender detection ───────────────────────────────────────
+    let sender = 'unknown';
+    if (sellerPrefixRx.test(wholeText)) sender = 'seller';
+    else if (buyerDetect.test(wholeText)) sender = 'buyer';
+    else if (bubble.querySelector(SELECTORS.outgoingBubble)) sender = 'seller';
 
-    /* --------------------------------------------------------------
-     * Extract each bubble’s text inside the group
-     * (take both your SELECTORS.bubbleText and the legacy span[dir="auto"])
-     * ------------------------------------------------------------ */
-    const bubbleSelector = `${SELECTORS.bubbleText}, span[dir="auto"]`;
-    group.querySelectorAll(bubbleSelector).forEach(span => {
-      const text = span.textContent.trim();
-      if (!text) return;                       // nothing there
-      if (enterRegex.test(text)) return;       // literal “Enter”
-      // Filter out messages that match the clientName (trimmed and lowercased)
-      if (text.trim().toLowerCase() === clientName.trim().toLowerCase()) return;
-      // Filter out messages that start with "Calificar a" (case-insensitive)
-      if (text.trim().toLowerCase().startsWith('calificar a')) return;
-      // Filter out messages that are times like "9:17 pm" (with or without am/pm, 12/24h)
-      if (/^\d{1,2}:\d{2}(?:\s?[ap]m)?$/i.test(text.trim())) return;
-      // Filter out messages that contain "inició este chat" (case-insensitive)
-      if (text.toLowerCase().includes('inició este chat')) return;
-      // Filter out messages that are the chat title (trim and lowercase)
-      const chatTitle = Messenger.extractChatTitle().trim().toLowerCase();
-      if (text.trim().toLowerCase() === chatTitle) return;
+    if (sender === 'unknown') {
+      console.log(`[bubble ${bIdx}] SKIP (unknown sender) wholeText="%s"`, wholeText);
+      return; // discard entire bubble
+    }
 
-      // honour MESSAGE_FILTERS, if the global is present
-      if (MESSAGE_FILTERS.some(rx => rx.test(text))) return;
+    console.log(`[bubble ${bIdx}] sender=%s | wholeText="%s"`, sender, wholeText);
 
+    const spans = [...bubble.querySelectorAll(`${SELECTORS.bubbleText}, span[dir="auto"]`)];
+    spans.forEach((span, sIdx) => {
+      let text = span.textContent.trim();
+      if (!text) { console.log(`  span ${sIdx} skip (empty)`); return; }
+      if (enterRegex.test(text)) { console.log(`  span ${sIdx} skip (ENTER)`); return; }
+
+      // strip prefix from first span only
+      if (sIdx === 0) {
+        const before = text;
+        if (sender === 'seller') text = text.replace(/^enviaste/i, '').trim();
+        else                     text = text.replace(buyerStrip, '').trim();
+        console.log(`  span ${sIdx} strip: "%s" → "%s"`, before, text);
+        if (!text) { console.log(`  span ${sIdx} skip (empty after strip)`); return; }
+      }
+
+      if (SYSTEM_FILTERS.some(rx => rx.test(text))) {
+        console.log(`  span ${sIdx} skip (SYSTEM) "%s"`, text);
+        return;
+      }
+
+      console.log(`  span ${sIdx} KEEP  (sender=%s) "%s"`, sender, text);
       messages.push({ sender, text });
     });
   });
 
-  /* --------------------------------------------------------------
-   * Emergency fallback – should rarely be needed, but keeps
-   * behaviour identical to your previous implementation
-   * ------------------------------------------------------------ */
-  if (!messages.length) {
-    thread.querySelectorAll('span[dir="auto"]').forEach(span => {
-      const text = span.textContent.trim();
-      if (text && !enterRegex.test(text)) messages.push({ sender: 'unknown', text });
-    });
-  }
-
-  /* --------------------------------------------------------------
-   * Slice after the “inició este chat” marker (if you still use it)
-   * ------------------------------------------------------------ */
-  if (window.REGEX?.markerChatStart) {
-    const idx = messages.findIndex(m => REGEX.markerChatStart.test(m.text));
-    if (idx >= 0) messages.splice(0, idx + 1);
-  }
-
-  // 4. Return the last <limit> cleaned messages
+  console.log('[extractLastMessages] collected msgs:', messages);
   return messages.slice(-limit);
 }
+
+
+
 
 /********************************************************************
  *  ➤ Example workflow
@@ -994,6 +952,7 @@ async extractLastMessages(limit = 20) {
           const msgLimit = await Storage.getNumber('scanLimit', CONFIG.DEFAULT_MSG_LIMIT);
           const data = await ChatScanner.collectChatsData(CONFIG.DEFAULT_CHAT_LIMIT, msgLimit, CONFIG.DEFAULT_DELAY_MS);
           sendResponse({ chatsData: data });
+          log('Detailed scan completed', data);
           break;
         }
 
