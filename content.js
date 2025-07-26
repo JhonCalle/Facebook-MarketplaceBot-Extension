@@ -40,7 +40,7 @@
 
   const CONFIG = {
     DEFAULT_CHAT_LIMIT   : 20,
-    DEFAULT_MSG_LIMIT    : 10,
+    DEFAULT_MSG_LIMIT    : 100,
     DEFAULT_DELAY_MS     : 1500,
     WAIT_FOR_ELEMENT_MS  : 5000,
     WAIT_FOR_INTERVAL_MS : 100,
@@ -60,12 +60,37 @@
 
   const SELECTORS = {
     composer        : '[contenteditable="true"][role="textbox"]',
-    messageGroup    : 'div[data-testid="message-group"], div[role="row"]',
     header          : 'header[role="banner"]',
     headerLink      : 'header[role="banner"] a[role="link"][href*="/t/"][aria-label]',
     headerTitleSpan : 'h2 span[dir="auto"]',
-    topChatLinks    : 'a[role="link"][href*="/t/"]'
+    topChatLinks    : 'a[role="link"][href*="/t/"]',
+    threadWrapper  : 'div[aria-label^="Mensajes de la conversación"]',
+    messageGroup   : 'div[data-testid="message-group"], div[role="row"], div[role="listitem"]',
+    outgoingBubble : [
+      '[data-ownership="self"]',        // most common in 2025 builds
+      '[data-owner="self"]',            // A/B variant
+      '[data-testid^="outgoing"]',      // outgoing_message_text / _emoji / …
+      '[data-testid="outgoing_message"]'// legacy fallback
+    ].join(','),
+    bubbleText     : 'span[dir="auto"]'
   };
+
+  /* ---------------------------------------------------------------
+ *  Helper: does this <message‑group> belong to the seller (you)?
+ * ------------------------------------------------------------- */
+function isGroupFromSeller(group) {
+  // 1. Preferred – any descendant matches our extended selector list
+  if (group.querySelector(SELECTORS.outgoingBubble)) return true;
+
+  // 2. Or the wrapper itself carries the flag
+  if (group.matches('[data-owner="self"], [data-ownership="self"]')) return true;
+
+  // 3. Fallback – text label (“Enviaste”, “You sent”)
+  if (/enviaste|you sent/i.test(group.textContent)) return true;
+
+  return false; // otherwise assume buyer
+}
+
 
 /**
  * Selector that matches the *blue‑dot wrapper* of unread chats.
@@ -95,7 +120,9 @@ const UNREAD_DOT_SELECTOR =
     suggested_response2: /Lo estoy mirando. Te avisaré./i,
     suggested_response3: /Lo siento, no está disponible./i,
     suggested_response4: /Envía una respuesta rápida./i,
-    suggested_response5: /Toca una respuesta para enviársela al comprador./i
+    suggested_response5: /Toca una respuesta para enviársela al comprador./i,
+    Enter: /Enter/i
+
   };
 
   const MESSAGE_FILTERS = [
@@ -112,8 +139,15 @@ const UNREAD_DOT_SELECTOR =
     REGEX.suggested_response2,
     REGEX.suggested_response3,
     REGEX.suggested_response4,
-    REGEX.suggested_response5
+    REGEX.suggested_response5,
+    REGEX.Enter,
+    /Agregar/i,
+    /Nombre/i,
+    /Ya pueden calificarse/i,   
+    /Es posible que las personas se califiquen entre sí según sus interacciones o transacciones./i,
+    /Mensaje enviado/i
   ];
+
 
   // Internal state ------------------------------------------------------------
   let isCycling = false;
@@ -175,14 +209,16 @@ const UNREAD_DOT_SELECTOR =
       }
       parts.push(`<div style="font-size:26px;margin-bottom:16px;font-weight:bold;color:#fff;text-shadow:0 2px 8px #0004;letter-spacing:1px;">${step}</div>`);
       if (lines.length) {
-        parts.push('<div style="background:rgba(255,255,255,0.12);border-radius:8px;padding:12px 18px;box-shadow:0 1px 4px #0001;max-width:90%;margin:auto;">');
+        // Render each line as a separate bubble box
+        parts.push('<div style="display:flex;flex-direction:column;gap:10px;background:rgba(255,255,255,0.12);border-radius:8px;padding:12px 18px;box-shadow:0 1px 4px #0001;max-width:90%;margin:auto;">');
         for (const l of lines) {
           const lineStr = typeof l === 'string' ? l : JSON.stringify(l, null, 2);
           if (lineStr.startsWith('[Image]')) {
             const url = lineStr.replace('[Image] ', '').trim();
             parts.push(`<div style="margin:10px 0;text-align:center;"><img src="${url}" style="max-width:180px;max-height:120px;border-radius:6px;box-shadow:0 2px 8px #0002;display:inline-block;vertical-align:middle;" alt="Image preview" /></div>`);
           } else {
-            parts.push(`<div style="margin:8px 0;font-size:18px;color:#fff;">${lineStr}</div>`);
+            // Chat bubble style for each message
+            parts.push(`<div style="background:rgba(0,0,0,0.7);color:#fff;padding:10px 16px;border-radius:16px;box-shadow:0 2px 8px #0002;max-width:80%;margin:0 auto;font-size:18px;word-break:break-word;">${lineStr}</div>`);
           }
         }
         parts.push('</div>');
@@ -388,49 +424,137 @@ const UNREAD_DOT_SELECTOR =
       return document.title;
     },
 
-    async extractLastMessages(limit) {
-      const container =
-        document.querySelector('div[data-pagelet][role="main"]') ||
-        document.querySelector('[data-testid="messenger_list_view"]') ||
-        document.body;
+/********************************************************************
+ *  1)  findScroller()  – searches *inside* the wrapper for the first
+ *      descendant that can actually scroll (scrollHeight > clientHeight)
+ ********************************************************************/
+findScroller() {
+  const wrapper = document.querySelector(SELECTORS.threadWrapper);
+  if (!wrapper) return null;
 
-      let groups = container.querySelectorAll(SELECTORS.messageGroup);
-      if (!groups.length) groups = container.querySelectorAll('div[role="row"]');
+  const walker = document.createTreeWalker(wrapper, NodeFilter.SHOW_ELEMENT);
+  let node = wrapper;
+  while (node) {
+    if (node.scrollHeight - node.clientHeight > 20) return node;
+    node = walker.nextNode();
+  }
+  return null;
+},
 
-      const messages = [];
-      groups.forEach(group => {
-        const textContent = group.textContent;
-        const isSeller = REGEX.youSent.test(textContent) || group.querySelector('[data-testid="outgoing_message"]');
-        const sender = isSeller ? 'seller' : 'buyer';
+/********************************************************************
+ *  2)  loadOlder(pages = 5, pauseMs = 900)
+ *      Scrolls to the top of the scroller N times, waiting a bit
+ *      so Messenger can fetch older messages each time.
+ ********************************************************************/
+async loadOlder(pages = 5, pauseMs = 2000) {
+  const scroller = Messenger.findScroller();
+  if (!scroller) {
+    console.warn('⚠️  Scrollable container not found – selector may be outdated.');
+    return;
+  }
 
-        group.querySelectorAll('span[dir="auto"]').forEach(span => {
-          const text = span.textContent.trim();
-          if (text) messages.push({ text, sender });
-        });
-      });
+  for (let i = 0; i < pages; i++) {
+    const heightBefore = scroller.scrollHeight;
+    scroller.scrollTop = 0;                     // jump to top
+    await new Promise(r => setTimeout(r, pauseMs));
 
-      if (!messages.length) {
-        container.querySelectorAll('span[dir="auto"]').forEach(span => {
-          const text = span.textContent.trim();
-          if (text) messages.push({ text, sender: 'unknown' });
-        });
-      }
+    // stop early if nothing new loaded
+    if (scroller.scrollHeight === heightBefore) break;
+  }
+},
 
-      // Slice after the "inició este chat" marker
-      const markerIdx = messages.findIndex(m => REGEX.markerChatStart.test(m.text));
-      if (markerIdx >= 0) messages.splice(0, markerIdx + 1);
+/********************************************************************
+ *  3)  extractLastMessages(limit = 20)
+ *      Returns an array like:  [{ text, sender }, …]
+ ********************************************************************/
+async extractLastMessages(limit = 20) {
+  // 1. Make sure the thread has enough history loaded
+  await Messenger.loadOlder(5);
 
-      // Buyer name (first word of chat title) for filtering
-      const clientName = Messenger.extractChatTitle().split('·')[0]?.toLowerCase() || '';
+  // 2. Find the wrapper for *this* conversation
+  const thread = document.querySelector(SELECTORS.threadWrapper);
+  if (!thread) {
+    console.warn('⚠️  Conversation wrapper not found – selector may be outdated.');
+    return [];
+  }
 
-      const filtered = messages.filter(m => {
-        const t = m.text.toLowerCase();
-        if (!t || t === 'enter' || t === clientName) return false;
-        return MESSAGE_FILTERS.every(rx => !rx.test(t));
-      });
+  // 3. Grab every message‑group element that belongs to the thread
+  const groups = thread.querySelectorAll(SELECTORS.messageGroup);
+  if (!groups.length) {
+    console.warn('⚠️  No message groups found – markup may have changed.');
+    return [];
+  }
 
-      return filtered.slice(-limit);
-    }
+  const messages   = [];
+  const enterRegex = /^\s*enter\s*$/i;          // filters litteral “Enter”
+  const clientName = (Messenger.extractChatTitle().split('·')[0] || '')
+                       .toLowerCase();          // first word of chat title
+
+  groups.forEach(group => {
+    /* --------------------------------------------------------------
+     * Who sent this *group*?
+     * ------------------------------------------------------------ */
+  const sender = isGroupFromSeller(group) ? 'seller' : 'buyer';
+
+
+    /* --------------------------------------------------------------
+     * Extract each bubble’s text inside the group
+     * (take both your SELECTORS.bubbleText and the legacy span[dir="auto"])
+     * ------------------------------------------------------------ */
+    const bubbleSelector = `${SELECTORS.bubbleText}, span[dir="auto"]`;
+    group.querySelectorAll(bubbleSelector).forEach(span => {
+      const text = span.textContent.trim();
+      if (!text) return;                       // nothing there
+      if (enterRegex.test(text)) return;       // literal “Enter”
+      // Filter out messages that match the clientName (trimmed and lowercased)
+      if (text.trim().toLowerCase() === clientName.trim().toLowerCase()) return;
+      // Filter out messages that start with "Calificar a" (case-insensitive)
+      if (text.trim().toLowerCase().startsWith('calificar a')) return;
+      // Filter out messages that are times like "9:17 pm" (with or without am/pm, 12/24h)
+      if (/^\d{1,2}:\d{2}(?:\s?[ap]m)?$/i.test(text.trim())) return;
+      // Filter out messages that contain "inició este chat" (case-insensitive)
+      if (text.toLowerCase().includes('inició este chat')) return;
+      // Filter out messages that are the chat title (trim and lowercase)
+      const chatTitle = Messenger.extractChatTitle().trim().toLowerCase();
+      if (text.trim().toLowerCase() === chatTitle) return;
+
+      // honour MESSAGE_FILTERS, if the global is present
+      if (MESSAGE_FILTERS.some(rx => rx.test(text))) return;
+
+      messages.push({ text, sender });
+    });
+  });
+
+  /* --------------------------------------------------------------
+   * Emergency fallback – should rarely be needed, but keeps
+   * behaviour identical to your previous implementation
+   * ------------------------------------------------------------ */
+  if (!messages.length) {
+    thread.querySelectorAll('span[dir="auto"]').forEach(span => {
+      const text = span.textContent.trim();
+      if (text && !enterRegex.test(text)) messages.push({ text, sender: 'unknown' });
+    });
+  }
+
+  /* --------------------------------------------------------------
+   * Slice after the “inició este chat” marker (if you still use it)
+   * ------------------------------------------------------------ */
+  if (window.REGEX?.markerChatStart) {
+    const idx = messages.findIndex(m => REGEX.markerChatStart.test(m.text));
+    if (idx >= 0) messages.splice(0, idx + 1);
+  }
+
+  // 4. Return the last <limit> cleaned messages
+  return messages.slice(-limit);
+}
+
+/********************************************************************
+ *  ➤ Example workflow
+ ********************************************************************/
+// await loadOlder(3);                          // load 3 extra "pages"
+// const msgs = await extractLastMessages(100); // get last 100 bubbles
+// console.table(msgs);
+
   };
 
   // ────────────────────────────────────────────────────────────────────────────
@@ -822,7 +946,7 @@ const UNREAD_DOT_SELECTOR =
           const limit = await Storage.getNumber('scanLimit', CONFIG.DEFAULT_MSG_LIMIT);
           const messages = await Messenger.extractLastMessages(limit);
           sendResponse({ messages });
-          break;
+          return true;
         }
 
         case MSG.SCAN_TOP:

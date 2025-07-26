@@ -104,21 +104,7 @@ const messageHandlers = {
   }
 };
 
-// Central message dispatcher
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  debugLog('Received message:', request.action);
 
-  const handler = messageHandlers[request.action];
-  if (!handler) return false;
-
-  try {
-    return handler(request, sendResponse);
-  } catch (error) {
-    debugLog('Error in message handler:', error);
-    sendResponse({ error: error.message });
-    return true;
-  }
-});
 
 // Load the saved state when the extension starts
 chrome.runtime.onStartup.addListener(loadState);
@@ -159,33 +145,23 @@ function stopMessageChecker() {
   }
 }
 
+// Central message dispatcher
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === 'fetchImage') {
-    console.log('Background script received fetchImage request', request); // ADDED
+  debugLog('Received message:', request.action);
+
+  const handler = messageHandlers[request.action];
+  if (handler) {
     try {
-      fetch(request.url)
-        .then(response => {
-          console.log('Background script fetch response', response); // ADDED
-          return response.blob();
-        })
-        .then(blob => {
-          console.log('Background script got blob', blob); // ADDED
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            console.log('Background script sending dataUrl response'); // ADDED
-            sendResponse({ success: true, dataUrl: reader.result });
-          };
-          reader.readAsDataURL(blob);
-        })
-        .catch(error => {
-          console.error('Background script fetch error', error); // ADDED
-          sendResponse({ success: false, error: error.message });
-        });
-      return true; // Keep the message channel open for sendResponse
-    } catch (e) {
-      console.error('Background script error', e); // ADDED
-      sendResponse({ success: false, error: e.message });
-      return true;
+      // The handler itself is responsible for returning true for async responses.
+      return handler(request, sendResponse, sender);
+    } catch (error) {
+      debugLog('Error in message handler:', error);
+      sendResponse({ success: false, error: error.message });
+      return false; // Return false as the handler errored synchronously.
     }
+  } else {
+    debugLog('No handler found for action:', request.action);
+    // To be safe, return false if no handler is found.
+    return false;
   }
 });

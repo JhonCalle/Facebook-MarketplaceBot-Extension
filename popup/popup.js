@@ -3,6 +3,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const stopBtn = document.getElementById('stopBotButton');
   const webhookInput = document.getElementById('webhookUrlInput');
   const statusEl = document.getElementById('status');
+  const extractBtn = document.getElementById('extractLastMessagesButton');
 
   const DEFAULT_WEBHOOK = 'https://n8nimpulsa.zapto.org/webhook/ImpulsaAIbot';
 
@@ -97,6 +98,39 @@ document.addEventListener('DOMContentLoaded', () => {
         setStatus('Bot stopped.');
         setTimeout(() => window.close(), 900);
       });
+    });
+  });
+
+  // Extract Last Messages button handler
+  extractBtn?.addEventListener('click', async () => {
+    extractBtn.disabled = true;
+    setStatus('Extracting last messages...');
+    const ready = await ensureContentScript();
+    if (!ready) {
+      setStatus('Not a supported page. Open Facebook Messenger.', true);
+      extractBtn.disabled = false;
+      return;
+    }
+    chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
+      chrome.tabs.sendMessage(
+        tabs[0].id,
+        { action: 'scanMessages', limit: 20 },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            setStatus('Error: ' + chrome.runtime.lastError.message, true);
+            extractBtn.disabled = false;
+            return;
+          }
+          if (response && response.messages) {
+            setStatus(response.messages);
+          } else if (response && response.error) {
+            setStatus('Error: ' + response.error, true);
+          } else {
+            setStatus('No messages found or unknown error.', true);
+          }
+          extractBtn.disabled = false;
+        }
+      );
     });
   });
 
