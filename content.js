@@ -1093,7 +1093,13 @@ async extractLastMessages(limit = 20) {
   function init() {
     log('Content script initialised', window.location.href);
 
-    chrome.runtime.onMessage.addListener(handleMessage);
+    // Wrap the async handler so we can synchronously return `true`
+    // to keep the messaging channel open until `handleMessage`
+    // finishes and calls `sendResponse`.
+    chrome.runtime.onMessage.addListener((req, sender, resp) => {
+      handleMessage(req, sender, resp);
+      return true;
+    });
 
     // commands handled in handleMessage
 
