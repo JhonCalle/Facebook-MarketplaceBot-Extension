@@ -521,7 +521,7 @@ async extractLastMessages(limit = 20) {
       // honour MESSAGE_FILTERS, if the global is present
       if (MESSAGE_FILTERS.some(rx => rx.test(text))) return;
 
-      messages.push({ text, sender });
+      messages.push({ sender, text });
     });
   });
 
@@ -532,7 +532,7 @@ async extractLastMessages(limit = 20) {
   if (!messages.length) {
     thread.querySelectorAll('span[dir="auto"]').forEach(span => {
       const text = span.textContent.trim();
-      if (text && !enterRegex.test(text)) messages.push({ text, sender: 'unknown' });
+      if (text && !enterRegex.test(text)) messages.push({ sender: 'unknown', text });
     });
   }
 
@@ -946,6 +946,7 @@ async extractLastMessages(limit = 20) {
           const limit = await Storage.getNumber('scanLimit', CONFIG.DEFAULT_MSG_LIMIT);
           const messages = await Messenger.extractLastMessages(limit);
           sendResponse({ messages });
+          log('Messages scanned', { messages });
           return true;
         }
 
