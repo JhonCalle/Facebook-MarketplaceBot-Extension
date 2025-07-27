@@ -64,18 +64,23 @@
     headerLink      : 'header[role="banner"] a[role="link"][href*="/t/"][aria-label]',
     headerTitleSpan : 'h2 span[dir="auto"]',
     topChatLinks    : 'a[role="link"][href*="/t/"]',
-    threadWrapper  : 'div[aria-label^="Mensajes de la conversación"]',
-    messageGroup   : 'div[data-testid="message-group"], div[role="row"], div[role="listitem"]',
-    outgoingBubble : [
-      '[data-ownership="self"]',        // most common in 2025 builds
-      '[data-owner="self"]',            // A/B variant
-      '[data-testid^="outgoing"]',      // outgoing_message_text / _emoji / …
-      '[data-testid="outgoing_message"]'// legacy fallback
+    threadWrapper   : 'div[aria-label^="Mensajes de la conversación"]',
+    messageGroup    : 'div[data-testid="message-group"], div[role="row"], div[role="listitem"]',
+    outgoingBubble  : [
+      '[data-ownership="self"]',
+      '[data-owner="self"]',
+      '[data-testid^="outgoing"]',
+      '[data-testid="outgoing_message"]'
     ].join(','),
-    bubbleText     : 'span[dir="auto"]'
+    bubbleText      : 'span[dir="auto"]',
+    bubblesContainer: 'div[data-scope="messages_table"][tabindex]',
+    unreadDot       : 'div[role="button"][aria-hidden="true"] span[data-visualcompletion="ignore"]',
+    imageSender: {
+      addFilesButton : 'div[role="button"][aria-label*="archivo" i], div[role="button"][aria-label*="file" i]',
+      hiddenFileInput: 'input[type="file"][multiple]',
+      uploadPreview  : 'img[src^="blob:"]'
+    }
   };
-
-const BUBBLE_SELECTOR = 'div[data-scope="messages_table"][tabindex]';
 const enterRegex      = /^\s*enter\s*$/i;
 const sellerPrefixRx  = /^enviaste\S/i;  
 
@@ -98,11 +103,20 @@ const SYSTEM_FILTERS = [
  * We search for a <span data-visualcompletion="ignore"> nested within a
  * <div role="button" aria-hidden="true">.
  */
-const UNREAD_DOT_SELECTOR =
-  'div[role="button"][aria-hidden="true"] span[data-visualcompletion="ignore"]';
 
-  // Storage helper provided by utils.js
-  const { Storage, waitFor, delay, pause, dataURLToBlob, formatRepliesForPreview } = window.MPUtils;
+  // Helpers provided by Utilities.js
+  const {
+    Storage,
+    waitFor,
+    delay,
+    pause,
+    dataURLToBlob,
+    formatRepliesForPreview,
+    fetchImageViaBackground,
+    checkForNewMessages
+  } = window.MPUtils;
+
+  
 
   // Internal state ------------------------------------------------------------
   let isCycling = false;
@@ -195,7 +209,6 @@ const UNREAD_DOT_SELECTOR =
   // Utilities
   // ────────────────────────────────────────────────────────────────────────────
   function log(message, data) {
-    console.log(`[Marketplace Bot] ${message}`, data || '');
     chrome.runtime.sendMessage({ action: MSG.LOG, message, data });
   }
 
@@ -204,15 +217,6 @@ const UNREAD_DOT_SELECTOR =
   // ---------------------------------------------------------------
 
   const ImageSender = (() => {
-    const SELECTORS = {
-      composer: '[contenteditable="true"][role="textbox"]',
-      addFilesButton: 'div[role="button"][aria-label*="archivo" i], div[role="button"][aria-label*="file" i]',
-      hiddenFileInput: 'input[type="file"][multiple]',
-      uploadPreview: 'img[src^="blob:"]'
-    };
-
-    async function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
-
     function focusComposer() {
       const el = document.querySelector(SELECTORS.composer);
       if (el) el.focus();
@@ -228,27 +232,16 @@ const UNREAD_DOT_SELECTOR =
       composer.dispatchEvent(ku);
       return true;
     }
-
-    async function waitFor(fn, ms = 50, timeout = 4000) {
-      return new Promise(resolve => {
-        const end = Date.now() + timeout;
-        (function loop() {
-          if (fn()) return resolve(true);
-          if (Date.now() > end) return resolve(false);
-          setTimeout(loop, ms);
-        })();
-      });
-    }
-
     async function viaFileInput(blob) {
+
       log('[ImageSender] viaFileInput called with blob:', blob);
-      const button = document.querySelector(SELECTORS.addFilesButton);
+      const button = document.querySelector(SELECTORS.imageSender.addFilesButton);
       if (button) {
         button.click();
         await delay(150);
       }
 
-      const input = document.querySelector(SELECTORS.hiddenFileInput);
+      const input = document.querySelector(SELECTORS.imageSender.hiddenFileInput);
       if (!input) {
         log('[ImageSender] hiddenFileInput not found');
         return false;
@@ -261,7 +254,7 @@ const UNREAD_DOT_SELECTOR =
       input.dispatchEvent(new Event('change', { bubbles: true }));
       log('[ImageSender] Dispatched change event on hiddenFileInput');
 
-      const previewFound = await waitFor(() => document.querySelector(SELECTORS.uploadPreview));
+      const previewFound = await waitFor(() => document.querySelector(SELECTORS.imageSender.uploadPreview));
       if (!previewFound) {
         log('[ImageSender] uploadPreview not found');
         return false;
@@ -283,7 +276,7 @@ const UNREAD_DOT_SELECTOR =
 
 
 
-  // helpers waitFor/delay/pause provided by utils.js
+  // helpers waitFor/delay/pause provided by Utilities.js
 
   // ────────────────────────────────────────────────────────────────────────────
   // Messenger helpers (DOM operations only)
@@ -423,7 +416,6 @@ async loadOlder(pages = 5, pauseMs = 2000) {
  *      Returns an array like:  [{ text, sender }, …]
  ********************************************************************/
 async extractLastMessages(limit = 20) {
-  console.log('[extractLastMessages] start (limit=%d)', limit);
   await Messenger.loadOlder(5);
 
   const thread = document.querySelector(SELECTORS.threadWrapper);
@@ -432,8 +424,7 @@ async extractLastMessages(limit = 20) {
     return [];
   }
 
-  const bubbles = thread.querySelectorAll(BUBBLE_SELECTOR);
-  console.log('[extractLastMessages] bubbles found:', bubbles.length);
+  const bubbles = thread.querySelectorAll(SELECTORS.bubblesContainer);
   if (!bubbles.length) return [];
 
   const messages   = [];
@@ -452,38 +443,29 @@ async extractLastMessages(limit = 20) {
     else if (bubble.querySelector(SELECTORS.outgoingBubble)) sender = 'seller';
 
     if (sender === 'unknown') {
-      console.log(`[bubble ${bIdx}] SKIP (unknown sender) wholeText="%s"`, wholeText);
       return; // discard entire bubble
     }
-
-    console.log(`[bubble ${bIdx}] sender=%s | wholeText="%s"`, sender, wholeText);
 
     const spans = [...bubble.querySelectorAll(`${SELECTORS.bubbleText}, span[dir="auto"]`)];
     spans.forEach((span, sIdx) => {
       let text = span.textContent.trim();
-      if (!text) { console.log(`  span ${sIdx} skip (empty)`); return; }
-      if (enterRegex.test(text)) { console.log(`  span ${sIdx} skip (ENTER)`); return; }
+      if (!text) {  return; }
+      if (enterRegex.test(text)) {  return; }
 
       // strip prefix from first span only
       if (sIdx === 0) {
         const before = text;
         if (sender === 'seller') text = text.replace(/^enviaste/i, '').trim();
         else                     text = text.replace(buyerStrip, '').trim();
-        console.log(`  span ${sIdx} strip: "%s" → "%s"`, before, text);
-        if (!text) { console.log(`  span ${sIdx} skip (empty after strip)`); return; }
+        if (!text) {  return; }
       }
 
       if (SYSTEM_FILTERS.some(rx => rx.test(text))) {
-        console.log(`  span ${sIdx} skip (SYSTEM) "%s"`, text);
         return;
       }
-
-      console.log(`  span ${sIdx} KEEP  (sender=%s) "%s"`, sender, text);
       messages.push({ sender, text });
     });
   });
-
-  console.log('[extractLastMessages] collected msgs:', messages);
   return messages.slice(-limit);
 }
 
@@ -577,7 +559,7 @@ async extractLastMessages(limit = 20) {
   function isUnreadChatRow(rowEl) {
     if (!rowEl) return false;
     // ✓ Dot present? (robust in current DOM build)
-    if (rowEl.querySelector(UNREAD_DOT_SELECTOR)) return true;
+    if (rowEl.querySelector(SELECTORS.unreadDot)) return true;
   
     // Fallback: aria‑label heuristic (covers unexpected lang/DOM variations)
     const aria = (rowEl.getAttribute('aria-label') || '').trim().toLowerCase();
@@ -852,27 +834,7 @@ async extractLastMessages(limit = 20) {
       }
     }
   };
-
-  // Detect chats marked as unread in the Marketplace interface
-  function checkForNewMessages() {
-    const unread = [];
-    const chatLinks = document.querySelectorAll(SELECTORS.topChatLinks);
-    chatLinks.forEach(link => {
-      const row = link.closest('[role="row"], li');
-      if (!row) return;
-      const hasBadge = row.querySelector('[aria-label*="unread" i], [aria-label*="nuevo" i], [aria-label*="new message" i]');
-      if (hasBadge) {
-        const id = (link.href.match(/\/t\/([^/?#]+)/) || [])[1];
-        const title = link.getAttribute('aria-label')?.trim() || link.textContent.trim();
-        if (id) unread.push({ id, title });
-      }
-    });
-    return unread;
-  }
-
-  // ────────────────────────────────────────────────────────────────────────────
   // Message Handlers
-  // ────────────────────────────────────────────────────────────────────────────
   async function handleMessage(request, sender, sendResponse) {
     try {
       switch (request.action) {
@@ -897,7 +859,7 @@ async extractLastMessages(limit = 20) {
           break;
 
         case MSG.CHECK_NEW: {
-          const unread = checkForNewMessages();
+          const unread = checkForNewMessages(SELECTORS);
           sendResponse({ unread });
           if (unread.length) {
             chrome.runtime.sendMessage({ action: 'processNewMessage', messageData: unread });
@@ -998,23 +960,6 @@ async extractLastMessages(limit = 20) {
   // ────────────────────────────────────────────────────────────────────────────
   // Helpers
   // Helper: fetch image via background script to bypass CORS
-  function fetchImageViaBackground(url) {
-    log('fetchImageViaBackground: called with url', url); // ADDED
-    return new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage({ action: 'fetchImage', url }, response => {
-        log('fetchImageViaBackground: received response', response); // ADDED
-        console.log('fetchImageViaBackground: full response object', response); // ADDED
-        if (response && response.success) {
-          resolve(response.dataUrl);
-        } else {
-          reject(response ? response.error : 'Unknown error');
-        }
-      });
-    });
-  }
-
-  // dataURLToBlob provided by utils.js
-  // ────────────────────────────────────────────────────────────────────────────
 
   // Detect single-page navigation and trigger a check when navigating to
   // the Marketplace chat view.

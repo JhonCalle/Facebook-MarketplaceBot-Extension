@@ -33,7 +33,7 @@
         "https://www.messenger.com/marketplace/*"
       ],
       "css": ["overlay.css"],
-      "js": ["utils.js", "content.js"],
+      "js": ["Utilities.js", "content.js"],
       "run_at": "document_end"
     }
   ],
