@@ -83,7 +83,14 @@ const SYSTEM_FILTERS = [
   /^mensaje enviado$/i,
   /^Ya pueden calificarse$/i,
   /^Es posible que las personas se califiquen entre sí según sus interacciones o transacciones\./i,
-  /^Calificar a/i
+  /^Calificar a/i,
+  /^Message sent$/i,
+  /^[\s\S]*?Envía una respuesta rápida[\s\S]*$/i,
+  /^Toca una respuesta para enviársela al comprador\./i,
+  /^Sí. ¿Te interesa?/i,
+  /^Lo estoy mirando. Te avisaré./i,
+  /^Lo siento, no está disponible./i,
+
 ];
 
 /**
@@ -96,29 +103,6 @@ const UNREAD_DOT_SELECTOR =
 
   // Storage helper provided by utils.js
   const { Storage, waitFor, delay, pause, dataURLToBlob, formatRepliesForPreview } = window.MPUtils;
-
-  // Regex pre‑compilation ------------------------------------------------------
-  const REGEX = {
-    markerChatStart  : /inició este chat/i,
-    timeOnly         : /^\d{1,2}:\d{2}(?:\s?[ap]m)?$/i,
-    dateTimeText     : /\d{1,2}\s(?:ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)\s\d{4},?\s\d{1,2}:\d{2}/i,
-    numericDateTime  : /^\d{1,2}\/\d{1,2}\/\d{2,4},?\s?\d{1,2}:\d{2}(?:\s?[ap]m)?$/i,
-    relativeTime     : /^enviado hace\s?\d+/i,
-    awaitingResponse : /está esperando tu respuesta/i,
-    viewPost         : /ver publicación/i,
-    sentLabel        : /message sent/i,
-    sentLabel2       : /Mensaje enviado/i,
-    justSent         : /^enviado$/i,
-    youSent          : /enviaste/i,
-    suggested_response1: /Sí. ¿Te interesa?/i,
-    suggested_response2: /Lo estoy mirando. Te avisaré./i,
-    suggested_response3: /Lo siento, no está disponible./i,
-    suggested_response4: /Envía una respuesta rápida./i,
-    suggested_response5: /Toca una respuesta para enviársela al comprador./i,
-    Enter: /Enter/i
-
-  };
-
 
   // Internal state ------------------------------------------------------------
   let isCycling = false;
