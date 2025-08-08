@@ -485,76 +485,91 @@ async extractLastMessages(limit = 20) {
   // ApiClient – Placeholder for phase 2
   // ────────────────────────────────────────────────────────────────────────────
   const ApiClient = {
-    abortController: null,
-    /**
-     * Send chatData to external server and return the response.
-     * @param {object} chatData – { clientName, chatName, messages, chatId, listing }
-   * @returns {Promise<{ replies: string[] } | null>}
-     */
-    /**
-     * Send chat data to the configured webhook endpoint.
-     * @param {object} chatData Data describing the chat
-     */
-    async sendChat(chatData) {
-      const webhookUrl = await Storage.getString('webhookUrl', CONFIG.DEFAULT_WEBHOOK_URL);
-      this.abortController = new AbortController();
-      
-      try {
-        log('Sending chat data to webhook', { webhookUrl, chatData });
-        const response = await fetch(webhookUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(chatData),
-          signal: this.abortController.signal
-        });
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        const responseData = await response.json();
-        log('Webhook response received', responseData);
+  abortController: null,
 
-        // Handle nested output.response array
-        let replies = [];
-        if (Array.isArray(responseData)) {
-          // If response is an array, take first element's output.response
-          if (responseData[0]?.output?.response) {
-            replies = responseData[0].output.response;
-          }
-        } else if (responseData.output?.response) {
-          replies = responseData.output.response;
-        } else if (Array.isArray(responseData.response)) {
-          replies = responseData.response;
-        } else if (typeof responseData.response === 'string') {
-          replies = [responseData.response];
-        }
+  /**
+   * Send chat data to the configured webhook endpoint.
+   * Waits up to 3 minutes before timing out.
+   * @param {object} chatData Data describing the chat
+   * @returns {Promise<{ replies: (string|{type:string,content?:string,url?:string})[] }>} 
+   */
+  async sendChat(chatData) {
+    const webhookUrl = await Storage.getString('webhookUrl', CONFIG.DEFAULT_WEBHOOK_URL);
+    this.abortController = new AbortController();
 
-        log('[ApiClient] Extracted replies:', replies);
+    // ⬆️ Increased from 120000 (2 min) to 180000 (3 min)
+    const TIMEOUT_MS = 180000;
+    let timeoutId;
 
-        if (!replies.length) {
-          replies = ['Respuesta recibida del servidor sin contenido de respuesta.'];
-        }
+    try {
+      log('Sending chat data to webhook', { webhookUrl, chatData });
 
-        return { replies };
-      } catch (error) {
-        if (error.name === 'AbortError') {
-          log('Webhook request aborted');
-          return { replies: [] };
-        }
-        console.error('Error sending data to webhook:', error);
-        return { replies: [`Error al conectar con el servidor: ${error.message}`] };
+      // Manual timeout so we can abort fetch and surface a clear error
+      const timeoutPromise = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+          this.abortController.abort();
+          reject(new Error('API request timed out after 3 minutes'));
+        }, TIMEOUT_MS);
+      });
+
+      const fetchPromise = fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(chatData),
+        signal: this.abortController.signal,
+        // Helps long requests survive and prevents cache interference
+        keepalive: true,
+        cache: 'no-store'
+      });
+
+      const response = await Promise.race([fetchPromise, timeoutPromise]);
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
-    }
-    ,
-    /** Abort any in-flight webhook request. */
-    abort() {
-      if (this.abortController) {
-        this.abortController.abort();
-        this.abortController = null;
+
+      const responseData = await response.json();
+      log('Webhook response received', responseData);
+
+      // Normalize replies array from several possible shapes
+      let replies = [];
+      if (Array.isArray(responseData)) {
+        if (responseData[0]?.output?.response) {
+          replies = responseData[0].output.response;
+        }
+      } else if (responseData.output?.response) {
+        replies = responseData.output.response;
+      } else if (Array.isArray(responseData.response)) {
+        replies = responseData.response;
+      } else if (typeof responseData.response === 'string') {
+        replies = [responseData.response];
       }
+
+      log('[ApiClient] Extracted replies:', replies);
+      if (!replies.length) {
+        replies = ['Respuesta recibida del servidor sin contenido de respuesta.'];
+      }
+
+      return { replies };
+    } catch (error) {
+      if (error.name === 'AbortError') {
+        log('Webhook request aborted');
+        return { replies: [] };
+      }
+      console.error('Error sending data to webhook:', error);
+      return { replies: [`Error al conectar con el servidor: ${error.message}`] };
     }
-  };
+  },
+
+  /** Abort any in-flight webhook request. */
+  abort() {
+    if (this.abortController) {
+      this.abortController.abort();
+      this.abortController = null;
+    }
+  }
+};
 
   function isUnreadChatRow(rowEl) {
     if (!rowEl) return false;
@@ -836,126 +851,137 @@ async extractLastMessages(limit = 20) {
   };
   // Message Handlers
   async function handleMessage(request, sender, sendResponse) {
-    try {
-      switch (request.action) {
-        case MSG.PING:
-          sendResponse({ status: 'active' });
-          break;
+  try {
+    switch (request.action) {
+      case MSG.PING:
+        sendResponse({ status: 'active' });
+        break;
 
-        case MSG.SCAN_TITLE:
-          sendResponse({ title: Messenger.extractChatTitle() });
-          break;
+      case MSG.SCAN_TITLE:
+        sendResponse({ title: Messenger.extractChatTitle() });
+        break;
 
-        case MSG.SCAN_MESSAGES: {
-          const limit = await Storage.getNumber('scanLimit', CONFIG.DEFAULT_MSG_LIMIT);
-          const messages = await Messenger.extractLastMessages(limit);
-          sendResponse({ messages });
-          log('Messages scanned', { messages });
-          return true;
-        }
-
-        case MSG.SCAN_TOP:
-          sendResponse({ chats: await ChatScanner.scanTopChats() });
-          break;
-
-        case MSG.CHECK_NEW: {
-          const unread = checkForNewMessages(SELECTORS);
-          sendResponse({ unread });
-          if (unread.length) {
-            chrome.runtime.sendMessage({ action: 'processNewMessage', messageData: unread });
-          }
-          break;
-        }
-
-        case MSG.CYCLE_CHATS:
-          ChatScanner.collectChatsData(CONFIG.DEFAULT_CHAT_LIMIT, CONFIG.DEFAULT_MSG_LIMIT, CONFIG.DEFAULT_DELAY_MS);
-          sendResponse({ started: true });
-          break;
-
-        case MSG.START_BOT: {
-          if (isCycling) { sendResponse({ started: false, reason: 'already_running' }); break; }
-          const limit = request.chatLimit || CONFIG.DEFAULT_CHAT_LIMIT;
-          ChatScanner.processUnreadChats(limit, CONFIG.DEFAULT_MSG_LIMIT);
-          sendResponse({ started: true });
-          break;
-        }
-
-        case MSG.STOP_BOT:
-          isCycling = false;
-          ApiClient.abort();
-          const composer = document.querySelector(SELECTORS.composer);
-          if (composer) {
-            composer.focus();
-            document.execCommand('selectAll', false, null);
-            document.execCommand('delete', false, null);
-          }
-          Overlay.update('Deteniendo...');
-          setTimeout(() => Overlay.hide(), 800);
-          sendResponse({ stopped: true });
-          break;
-
-        case MSG.SCAN_DETAILED: {
-          const msgLimit = await Storage.getNumber('scanLimit', CONFIG.DEFAULT_MSG_LIMIT);
-          const data = await ChatScanner.collectChatsData(CONFIG.DEFAULT_CHAT_LIMIT, msgLimit, CONFIG.DEFAULT_DELAY_MS);
-          sendResponse({ chatsData: data });
-          log('Detailed scan completed', data);
-          break;
-        }
-
-        case MSG.PROCESS_UNREAD: {
-          const msgLimit = await Storage.getNumber('scanLimit', CONFIG.DEFAULT_MSG_LIMIT);
-          const res = await ChatScanner.processOldestUnreadChat(msgLimit);
-          sendResponse(res);
-          break;
-        }
-
-        case MSG.SEND_TEST_REPLY: {
-          const testMessage = request.testMessage || 'respuesta de prueba';
-          sendResponse({ sent: await Messenger.sendMessage(testMessage) });
-          return true; // Keep the message channel open for async response
-        }
-
-        case MSG.SEND_TEST_IMAGE: {
-          try {
-            log('SEND_TEST_IMAGE: received request', request);
-            log('SEND_TEST_IMAGE: fetching image', request.url);
-            const dataUrl = await fetchImageViaBackground(request.url);
-            log('SEND_TEST_IMAGE: got dataUrl', dataUrl?.slice?.(0, 40));
-            if (!dataUrl) {
-              log('SEND_TEST_IMAGE: dataUrl is empty!');
-              sendResponse({ sent: false, error: 'dataUrl is empty' });
-              return true;
-            }
-            const blob = dataURLToBlob(dataUrl);
-            log('SEND_TEST_IMAGE: got blob', blob);
-            if (!blob) {
-              log('SEND_TEST_IMAGE: blob is null!');
-              sendResponse({ sent: false, error: 'blob is null' });
-              return true;
-            }
-
-            // Use the enhanced sender
-            const sent = await ImageSender.sendImage(blob);
-            log('SEND_TEST_IMAGE: sent result', sent);
-
-            sendResponse({ sent });
-          } catch (e) {
-            log('SEND_TEST_IMAGE: Error sending image', e);
-            sendResponse({ sent: false, error: e.message });
-          }
-          return true;
-        }
-
-        default:
-          sendResponse({});
+      case MSG.SCAN_MESSAGES: {
+        const limit = await Storage.getNumber('scanLimit', CONFIG.DEFAULT_MSG_LIMIT);
+        const messages = await Messenger.extractLastMessages(limit);
+        sendResponse({ messages });
+        log('Messages scanned', { messages });
+        return true;
       }
-    } catch (err) {
-      log('Error in message handler', err);
-      sendResponse({ error: err.message });
-    }
 
-    return true; // keep message channel open for async sendResponse
+      case MSG.SCAN_TOP:
+        sendResponse({ chats: await ChatScanner.scanTopChats() });
+        break;
+
+      case MSG.CHECK_NEW: {
+        const unread = checkForNewMessages(SELECTORS);
+        sendResponse({ unread });
+        if (unread.length) {
+          chrome.runtime.sendMessage({ action: 'processNewMessage', messageData: unread });
+        }
+        break;
+      }
+
+      case MSG.CYCLE_CHATS:
+        ChatScanner.collectChatsData(CONFIG.DEFAULT_CHAT_LIMIT, CONFIG.DEFAULT_MSG_LIMIT, CONFIG.DEFAULT_DELAY_MS);
+        sendResponse({ started: true });
+        break;
+
+      case MSG.START_BOT: {
+        if (isCycling) { sendResponse({ started: false, reason: 'already_running' }); break; }
+        const limit = request.chatLimit || CONFIG.DEFAULT_CHAT_LIMIT;
+        ChatScanner.processUnreadChats(limit, CONFIG.DEFAULT_MSG_LIMIT);
+        sendResponse({ started: true });
+        break;
+      }
+
+      case MSG.STOP_BOT:
+        isCycling = false;
+        ApiClient.abort();
+        const composer = document.querySelector(SELECTORS.composer);
+        if (composer) {
+          composer.focus();
+          document.execCommand('selectAll', false, null);
+          document.execCommand('delete', false, null);
+        }
+        Overlay.update('Deteniendo...');
+        setTimeout(() => Overlay.hide(), 800);
+        sendResponse({ stopped: true });
+        break;
+
+      // ⬇️ Modified: ACK immediately, run work in background, post result via message
+      case MSG.SCAN_DETAILED: {
+        const msgLimit = await Storage.getNumber('scanLimit', CONFIG.DEFAULT_MSG_LIMIT);
+        sendResponse({ started: true }); // immediate ACK to avoid 1-minute timeout
+        (async () => {
+          const data = await ChatScanner.collectChatsData(
+            CONFIG.DEFAULT_CHAT_LIMIT,
+            msgLimit,
+            CONFIG.DEFAULT_DELAY_MS
+          );
+          chrome.runtime.sendMessage({ action: 'scanDetailedResult', chatsData: data });
+          log('Detailed scan completed', data);
+        })();
+        return true;
+      }
+
+      // ⬇️ Modified: ACK immediately, run work in background, post result via message
+      case MSG.PROCESS_UNREAD: {
+        const msgLimit = await Storage.getNumber('scanLimit', CONFIG.DEFAULT_MSG_LIMIT);
+        sendResponse({ started: true }); // immediate ACK to avoid 1-minute timeout
+        (async () => {
+          const res = await ChatScanner.processOldestUnreadChat(msgLimit);
+          chrome.runtime.sendMessage({ action: 'processUnreadResult', result: res });
+        })();
+        return true;
+      }
+
+      case MSG.SEND_TEST_REPLY: {
+        const testMessage = request.testMessage || 'respuesta de prueba';
+        sendResponse({ sent: await Messenger.sendMessage(testMessage) });
+        return true; // Keep the message channel open for async response
+      }
+
+      case MSG.SEND_TEST_IMAGE: {
+        try {
+          log('SEND_TEST_IMAGE: received request', request);
+          log('SEND_TEST_IMAGE: fetching image', request.url);
+          const dataUrl = await fetchImageViaBackground(request.url);
+          log('SEND_TEST_IMAGE: got dataUrl', dataUrl?.slice?.(0, 40));
+          if (!dataUrl) {
+            log('SEND_TEST_IMAGE: dataUrl is empty!');
+            sendResponse({ sent: false, error: 'dataUrl is empty' });
+            return true;
+          }
+          const blob = dataURLToBlob(dataUrl);
+          log('SEND_TEST_IMAGE: got blob', blob);
+          if (!blob) {
+            log('SEND_TEST_IMAGE: blob is null!');
+            sendResponse({ sent: false, error: 'blob is null' });
+            return true;
+          }
+
+          const sent = await ImageSender.sendImage(blob);
+          log('SEND_TEST_IMAGE: sent result', sent);
+          sendResponse({ sent });
+        } catch (e) {
+          log('SEND_TEST_IMAGE: Error sending image', e);
+          sendResponse({ sent: false, error: e.message });
+        }
+        return true;
+      }
+
+      default:
+        sendResponse({});
+    }
+  } catch (err) {
+    log('Error in message handler', err);
+    sendResponse({ error: err.message });
   }
+
+  // Keep the message channel open for any async follow-ups
+  return true;
+}
 
   // ────────────────────────────────────────────────────────────────────────────
   // Helpers
