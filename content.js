@@ -499,15 +499,27 @@ async extractLastMessages(limit = 20) {
    * Send chat data to the configured webhook endpoint.
    * Waits up to 3 minutes before timing out.
    * @param {object} chatData Data describing the chat
-   * @returns {Promise<{ replies: (string|{type:string,content?:string,url?:string})[] }>} 
+   * @param {Function} [onCountdown] Optional callback receiving elapsed seconds
+   * @returns {Promise<{ replies: (string|{type:string,content?:string,url?:string})[] }>}
    */
-  async sendChat(chatData) {
+  async sendChat(chatData, onCountdown) {
     const webhookUrl = await Storage.getString('webhookUrl', CONFIG.DEFAULT_WEBHOOK_URL);
     this.abortController = new AbortController();
 
     // Allow slow APIs up to three minutes to respond
     const TIMEOUT_MS = 3 * 60 * 1000; // 180000 ms
     let timeoutId;
+
+    // Timer to surface elapsed time to the UI
+    const start = Date.now();
+    let countdownId;
+    if (typeof onCountdown === 'function') {
+      onCountdown(0);
+      countdownId = setInterval(() => {
+        const secs = Math.floor((Date.now() - start) / 1000);
+        onCountdown(secs);
+      }, 1000);
+    }
 
     try {
       log('Sending chat data to webhook', { webhookUrl, chatData });
@@ -567,6 +579,8 @@ async extractLastMessages(limit = 20) {
       }
       console.error('Error sending data to webhook:', error);
       return { replies: [`Error al conectar con el servidor: ${error.message}`] };
+    } finally {
+      clearInterval(countdownId);
     }
   },
 
@@ -706,8 +720,11 @@ async extractLastMessages(limit = 20) {
         // ────────────────────────────────────────────────────────────────
         // 1) Enviar datos al webhook y obtener la respuesta
         // ────────────────────────────────────────────────────────────────
-        Overlay.update('Generando respuesta...');
-        const { replies } = await ApiClient.sendChat({ chatId, clientName, listing, chatName: chatTitle, messages });
+        Overlay.updateStep('Generando respuesta...', [chatTitle], '0s');
+        const { replies } = await ApiClient.sendChat(
+          { chatId, clientName, listing, chatName: chatTitle, messages },
+          secs => Overlay.updateStep('Generando respuesta...', [chatTitle], `${secs}s`)
+        );
 
         // ────────────────────────────────────────────────────────────────
         // 2) Mostrar pre-visualización durante 5 seg para permitir cancelar
@@ -786,13 +803,17 @@ async extractLastMessages(limit = 20) {
           .map(s => s.trim());
 
         log('Sending data to API', { step: 'Sending to API', chatTitle, clientName });
-        const response = await ApiClient.sendChat({
-          chatId: target.id,
-          clientName,
-          listing,
-          chatName: chatTitle,
-          messages
-        });
+        Overlay.updateStep('Sending to API', [chatTitle], '0s');
+        const response = await ApiClient.sendChat(
+          {
+            chatId: target.id,
+            clientName,
+            listing,
+            chatName: chatTitle,
+            messages
+          },
+          secs => Overlay.updateStep('Sending to API', [chatTitle], `${secs}s`)
+        );
 
         log('API response received', { step: 'API response', replies: response.replies, chatTitle, state: 'success' });
 
@@ -834,8 +855,11 @@ async extractLastMessages(limit = 20) {
           const [clientName = chatTitle, listing = chatTitle] = chatTitle.split('·').map(s => s.trim());
           await pause(CONFIG.WAIT.beforeAPI, 'Waiting before API');
           if (!isCycling) break;
-          Overlay.updateStep('Sending to API', [chatTitle]);
-          const { replies } = await ApiClient.sendChat({ chatId: chat.id, clientName, listing, chatName: chatTitle, messages });
+          Overlay.updateStep('Sending to API', [chatTitle], '0s');
+          const { replies } = await ApiClient.sendChat(
+            { chatId: chat.id, clientName, listing, chatName: chatTitle, messages },
+            secs => Overlay.updateStep('Sending to API', [chatTitle], `${secs}s`)
+          );
           await pause(CONFIG.WAIT.afterAPI, 'API Response', formatRepliesForPreview(replies));
           if (!isCycling) break;
           for (const msg of replies) {
@@ -863,23 +887,23 @@ async extractLastMessages(limit = 20) {
     switch (request.action) {
       case MSG.PING:
         sendResponse({ status: 'active' });
-        break;
+        return false;
 
       case MSG.SCAN_TITLE:
         sendResponse({ title: Messenger.extractChatTitle() });
-        break;
+        return false;
 
       case MSG.SCAN_MESSAGES: {
         const limit = await Storage.getNumber('scanLimit', CONFIG.DEFAULT_MSG_LIMIT);
         const messages = await Messenger.extractLastMessages(limit);
         sendResponse({ messages });
         log('Messages scanned', { messages });
-        return true;
+        return false;
       }
 
       case MSG.SCAN_TOP:
         sendResponse({ chats: await ChatScanner.scanTopChats() });
-        break;
+        return false;
 
       case MSG.CHECK_NEW: {
         const unread = checkForNewMessages(SELECTORS);
@@ -887,20 +911,20 @@ async extractLastMessages(limit = 20) {
         if (unread.length) {
           chrome.runtime.sendMessage({ action: 'processNewMessage', messageData: unread });
         }
-        break;
+        return false;
       }
 
       case MSG.CYCLE_CHATS:
         ChatScanner.collectChatsData(CONFIG.DEFAULT_CHAT_LIMIT, CONFIG.DEFAULT_MSG_LIMIT, CONFIG.DEFAULT_DELAY_MS);
         sendResponse({ started: true });
-        break;
+        return false;
 
       case MSG.START_BOT: {
-        if (isCycling) { sendResponse({ started: false, reason: 'already_running' }); break; }
+        if (isCycling) { sendResponse({ started: false, reason: 'already_running' }); return false; }
         const limit = request.chatLimit || CONFIG.DEFAULT_CHAT_LIMIT;
         ChatScanner.processUnreadChats(limit, CONFIG.DEFAULT_MSG_LIMIT);
         sendResponse({ started: true });
-        break;
+        return false;
       }
 
       case MSG.STOP_BOT:
@@ -915,7 +939,7 @@ async extractLastMessages(limit = 20) {
         Overlay.update('Deteniendo...');
         setTimeout(() => Overlay.hide(), 800);
         sendResponse({ stopped: true });
-        break;
+        return false;
 
       // ⬇️ Modified: ACK immediately, run work in background, post result via message
       case MSG.SCAN_DETAILED: {
@@ -947,7 +971,7 @@ async extractLastMessages(limit = 20) {
       case MSG.SEND_TEST_REPLY: {
         const testMessage = request.testMessage || 'respuesta de prueba';
         sendResponse({ sent: await Messenger.sendMessage(testMessage) });
-        return true; // Keep the message channel open for async response
+        return false;
       }
 
       case MSG.SEND_TEST_IMAGE: {
@@ -959,14 +983,14 @@ async extractLastMessages(limit = 20) {
           if (!dataUrl) {
             log('SEND_TEST_IMAGE: dataUrl is empty!');
             sendResponse({ sent: false, error: 'dataUrl is empty' });
-            return true;
+            return false;
           }
           const blob = dataURLToBlob(dataUrl);
           log('SEND_TEST_IMAGE: got blob', blob);
           if (!blob) {
             log('SEND_TEST_IMAGE: blob is null!');
             sendResponse({ sent: false, error: 'blob is null' });
-            return true;
+            return false;
           }
 
           const sent = await ImageSender.sendImage(blob);
@@ -976,19 +1000,18 @@ async extractLastMessages(limit = 20) {
           log('SEND_TEST_IMAGE: Error sending image', e);
           sendResponse({ sent: false, error: e.message });
         }
-        return true;
+        return false;
       }
 
       default:
         sendResponse({});
+        return false;
     }
   } catch (err) {
     log('Error in message handler', err);
     sendResponse({ error: err.message });
+    return false;
   }
-
-  // Keep the message channel open for any async follow-ups
-  return true;
 }
 
   // ────────────────────────────────────────────────────────────────────────────
@@ -1016,13 +1039,8 @@ async extractLastMessages(limit = 20) {
   function init() {
     log('Content script initialised', window.location.href);
 
-    // Wrap the async handler so we can synchronously return `true`
-    // to keep the messaging channel open until `handleMessage`
-    // finishes and calls `sendResponse`.
-    chrome.runtime.onMessage.addListener((req, sender, resp) => {
-      handleMessage(req, sender, resp);
-      return true;
-    });
+    // Delegate message handling and return whether the channel should stay open.
+    chrome.runtime.onMessage.addListener((req, sender, resp) => handleMessage(req, sender, resp));
 
     // commands handled in handleMessage
 
