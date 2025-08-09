@@ -47,7 +47,12 @@ document.addEventListener('DOMContentLoaded', () => {
       if (pong?.status === 'active') return true;
     } catch {}
     try {
-      await chrome.scripting.executeScript({ target: { tabId: tabs[0].id }, files: ['content.js'] });
+      // Manually inject all required assets when the content script isn't present
+      await chrome.scripting.insertCSS({ target: { tabId: tabs[0].id }, files: ['overlay.css'] });
+      await chrome.scripting.executeScript({
+        target: { tabId: tabs[0].id },
+        files: ['Utilities.js', 'content.js']
+      });
     } catch {}
     await new Promise(res => setTimeout(res, 300));
     try {
