@@ -209,7 +209,15 @@ const SYSTEM_FILTERS = [
   // Utilities
   // ────────────────────────────────────────────────────────────────────────────
   function log(message, data) {
-    chrome.runtime.sendMessage({ action: MSG.LOG, message, data });
+    // Echo to the DevTools console for easier debugging
+    console.log(`[Marketplace Bot] ${message}`, data || '');
+
+    // Forward to the background/popup listeners as before
+    try {
+      chrome.runtime.sendMessage({ action: MSG.LOG, message, data });
+    } catch (err) {
+      console.warn('[Marketplace Bot] log forwarding failed', err);
+    }
   }
 
   // ---------------------------------------------------------------
@@ -497,8 +505,8 @@ async extractLastMessages(limit = 20) {
     const webhookUrl = await Storage.getString('webhookUrl', CONFIG.DEFAULT_WEBHOOK_URL);
     this.abortController = new AbortController();
 
-    // ⬆️ Increased from 120000 (2 min) to 180000 (3 min)
-    const TIMEOUT_MS = 180000;
+    // Allow slow APIs up to three minutes to respond
+    const TIMEOUT_MS = 3 * 60 * 1000; // 180000 ms
     let timeoutId;
 
     try {
