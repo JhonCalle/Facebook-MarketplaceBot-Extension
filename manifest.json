@@ -14,7 +14,8 @@
     "https://www.facebook.com/*",
     "https://web.facebook.com/*",
     "https://www.messenger.com/*",
-    "https://blogger.googleusercontent.com/*"
+    "https://blogger.googleusercontent.com/*",
+    "https://n8n.impresionesbolivia.com/*"
   ],
   "action": {
     "default_popup": "popup/popup.html",

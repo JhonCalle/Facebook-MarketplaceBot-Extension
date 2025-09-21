@@ -44,7 +44,7 @@
     DEFAULT_DELAY_MS     : 1500,
     WAIT_FOR_ELEMENT_MS  : 5000,
     WAIT_FOR_INTERVAL_MS : 100,
-    DEFAULT_WEBHOOK_URL  : 'https://n8nimpulsa.zapto.org/webhook/ImpulsaAIbot',
+    DEFAULT_WEBHOOK_URL  : 'https://n8n.impresionesbolivia.com/webhook/ImpulsaAIbot',
     MARKETPLACE_TEXT     : 'Marketplace',
     SCAN_BUFFER          : 30,
     UNREAD_SCAN_LIMIT    : 20,
@@ -493,105 +493,120 @@ async extractLastMessages(limit = 20) {
   // ApiClient – Placeholder for phase 2
   // ────────────────────────────────────────────────────────────────────────────
   const ApiClient = {
-  abortController: null,
-
-  /**
-   * Send chat data to the configured webhook endpoint.
-   * Waits up to 3 minutes before timing out.
-   * @param {object} chatData Data describing the chat
-   * @param {Function} [onCountdown] Optional callback receiving elapsed seconds
-   * @returns {Promise<{ replies: (string|{type:string,content?:string,url?:string})[] }>}
-   */
-  async sendChat(chatData, onCountdown) {
-    const webhookUrl = await Storage.getString('webhookUrl', CONFIG.DEFAULT_WEBHOOK_URL);
-    this.abortController = new AbortController();
-
-    // Allow slow APIs up to three minutes to respond
-    const TIMEOUT_MS = 3 * 60 * 1000; // 180000 ms
-    let timeoutId;
-
-    // Timer to surface elapsed time to the UI
-    const start = Date.now();
-    let countdownId;
-    if (typeof onCountdown === 'function') {
-      onCountdown(0);
-      countdownId = setInterval(() => {
-        const secs = Math.floor((Date.now() - start) / 1000);
-        onCountdown(secs);
-      }, 1000);
-    }
-
-    try {
-      log('Sending chat data to webhook', { webhookUrl, chatData });
-
-      // Manual timeout so we can abort fetch and surface a clear error
-      const timeoutPromise = new Promise((_, reject) => {
-        timeoutId = setTimeout(() => {
-          this.abortController.abort();
-          reject(new Error('API request timed out after 3 minutes'));
-        }, TIMEOUT_MS);
+    abortController: null,
+    _timeoutId: null,
+    _timedOut: false,
+  
+    async sendChat(chatData, onCountdown) {
+      const webhookUrl = await Storage.getString('webhookUrl', CONFIG.DEFAULT_WEBHOOK_URL);
+      this.abortController = new AbortController();
+      this._timedOut = false;
+  
+      const TIMEOUT_MS = 3 * 60 * 1000; // 180s
+      const start = Date.now();
+  
+      // richer diagnostics
+      log('[ApiClient] sendChat:start', { webhookUrl, TIMEOUT_MS, chatDataSize: JSON.stringify(chatData).length });
+      this.abortController.signal.addEventListener('abort', () => {
+        const elapsed = Date.now() - start;
+        log('[ApiClient] AbortSignal fired', { elapsedMs: elapsed, timedOut: this._timedOut });
       });
-
-      const fetchPromise = fetch(webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(chatData),
-        signal: this.abortController.signal,
-        // Helps long requests survive and prevents cache interference
-        keepalive: true,
-        cache: 'no-store'
-      });
-
-      const response = await Promise.race([fetchPromise, timeoutPromise]);
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+  
+      // UI countdown
+      let countdownId;
+      if (typeof onCountdown === 'function') {
+        onCountdown(0);
+        countdownId = setInterval(() => onCountdown(Math.floor((Date.now() - start)/1000)), 1000);
       }
-
-      const responseData = await response.json();
-      log('Webhook response received', responseData);
-
-      // Normalize replies array from several possible shapes
-      let replies = [];
-      if (Array.isArray(responseData)) {
-        if (responseData[0]?.output?.response) {
-          replies = responseData[0].output.response;
+  
+      // manual timeout with guard
+      this._timeoutId = setTimeout(() => {
+        this._timedOut = true;
+        if (this.abortController && !this.abortController.signal.aborted) {
+          try { this.abortController.abort(); } catch (e) { /* no-op */ }
         }
-      } else if (responseData.output?.response) {
-        replies = responseData.output.response;
-      } else if (Array.isArray(responseData.response)) {
-        replies = responseData.response;
-      } else if (typeof responseData.response === 'string') {
-        replies = [responseData.response];
-      }
+      }, TIMEOUT_MS);
+  
+      try {
+        // quick connectivity clue
+        if (!navigator.onLine) log('[ApiClient] navigator reports offline');
+  
+        console.log('[ApiClient] Request body:', JSON.stringify(chatData));
 
-      log('[ApiClient] Extracted replies:', replies);
-      if (!replies.length) {
-        replies = ['Respuesta recibida del servidor sin contenido de respuesta.'];
+        const fetchPromise = fetch(webhookUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(chatData),
+          signal: this.abortController.signal,
+          mode: 'cors',
+          credentials: 'omit',
+          cache: 'no-store'
+        });
+  
+        const response = await fetchPromise; // our own timeout will abort this if needed
+        const rt = Date.now() - start;
+        log('[ApiClient] fetch resolved', { ok: response.ok, status: response.status, rtMs: rt });
+  
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+  
+        let responseData;
+        try {
+          responseData = await response.json();
+        } catch (e) {
+          log('[ApiClient] non-JSON response', e);
+          throw new Error('Respuesta no válida del servidor (no JSON)');
+        }
+  
+        log('[ApiClient] Webhook JSON', { keys: Object.keys(responseData || {}) });
+  
+        // normalize replies
+        let replies = [];
+        if (Array.isArray(responseData)) {
+          if (responseData[0]?.output?.response) replies = responseData[0].output.response;
+        } else if (responseData.output?.response) {
+          replies = responseData.output.response;
+        } else if (Array.isArray(responseData.response)) {
+          replies = responseData.response;
+        } else if (typeof responseData.response === 'string') {
+          replies = [responseData.response];
+        }
+        if (!replies?.length) replies = ['Respuesta recibida sin contenido.'];
+  
+        return { replies };
+      } catch (error) {
+        const elapsed = Date.now() - start;
+  
+        if (this.abortController?.signal.aborted && this._timedOut) {
+          log('[ApiClient] timed out at 3m', { elapsedMs: elapsed });
+          return { replies: ['La solicitud excedió el tiempo máximo (3 minutos).'] };
+        }
+  
+        // Network-level failures often show up as "TypeError: Failed to fetch"
+        log('[ApiClient] fetch error', { message: error?.message, name: error?.name, elapsedMs: elapsed, stack: error?.stack });
+        console.error('[ApiClient] Detailed fetch error:', error);
+        return { replies: [`Error al conectar con el servidor: ${error?.message || 'Failed to fetch'}`] };
+      } finally {
+        if (this._timeoutId) { clearTimeout(this._timeoutId); this._timeoutId = null; }
+        if (countdownId) clearInterval(countdownId);
+        // do NOT null the controller here; let abort() own that lifecycle
       }
-
-      return { replies };
-    } catch (error) {
-      if (error.name === 'AbortError') {
-        log('Webhook request aborted');
-        return { replies: [] };
+    },
+  
+    /** Abort any in-flight webhook request and clear the timeout safely. */
+    abort() {
+      log('[ApiClient] abort() called');
+      if (this._timeoutId) { clearTimeout(this._timeoutId); this._timeoutId = null; }
+      if (this.abortController && !this.abortController.signal.aborted) {
+        try { this.abortController.abort(); } catch (e) { /* ignore */ }
       }
-      console.error('Error sending data to webhook:', error);
-      return { replies: [`Error al conectar con el servidor: ${error.message}`] };
-    } finally {
-      clearInterval(countdownId);
-    }
-  },
-
-  /** Abort any in-flight webhook request. */
-  abort() {
-    if (this.abortController) {
-      this.abortController.abort();
+      // keep the instance but mark as finished
       this.abortController = null;
+      this._timedOut = false;
     }
-  }
-};
+  };
+  
 
   function isUnreadChatRow(rowEl) {
     if (!rowEl) return false;

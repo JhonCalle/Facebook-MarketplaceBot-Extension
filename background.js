@@ -26,7 +26,11 @@ const messageHandlers = {
     debugLog('[fetchImage] Start', req.url);
     try {
       debugLog('[fetchImage] Fetching URL', req.url);
-      const response = await fetch(req.url);
+      // Add a generous timeout (3 minutes) to avoid hanging forever on slow hosts
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3 * 60 * 1000);
+      const response = await fetch(req.url, { signal: controller.signal, cache: 'no-store' });
+      clearTimeout(timeoutId);
       debugLog('[fetchImage] Fetch response', response);
       if (!response.ok) {
         debugLog('[fetchImage] Response not OK', response.status);
